@@ -14,10 +14,11 @@
 #include <grpcpp/grpcpp.h>
 
 #include <signal.h>
-#include <sys/prctl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+extern char **environ;
 
 #include <atomic>
 #include <chrono>
@@ -135,10 +136,15 @@ class RendererProcess {
  public:
   ~RendererProcess() { stop(); }
 
+  // Starts `command` ("{config}" replaced by config_path) in its own process
+  // group, with CARLA_CANVAS_PARENT_PID set: `carla-canvas serve` exits when
+  // this process is gone (e.g. killed), and stop() ends it at exit. (Not
+  // PR_SET_PDEATHSIG: that follows the forking thread, which may end first.)
   void start(const std::vector<std::string> &command, const std::string &config_path) {
     std::vector<std::string> args;
     for (auto arg : command) {
-      for (size_t at; (at = arg.find("{config}")) != std::string::npos;) {
+      for (size_t at = 0; (at = arg.find("{config}", at)) != std::string::npos;
+           at += config_path.size()) {
         arg.replace(at, 8, config_path);
       }
       args.push_back(std::move(arg));
@@ -146,15 +152,21 @@ class RendererProcess {
     std::vector<char *> argv;
     for (auto &a : args) argv.push_back(a.data());
     argv.push_back(nullptr);
-    const pid_t parent = getpid();
+    // Everything the child needs is built before fork(): after it, in a
+    // multithreaded process, only async-signal-safe calls are allowed.
+    std::vector<std::string> env_strings;
+    for (char **e = environ; *e != nullptr; ++e) {
+      if (std::strncmp(*e, "CARLA_CANVAS_PARENT_PID=", 24) != 0) env_strings.emplace_back(*e);
+    }
+    env_strings.push_back("CARLA_CANVAS_PARENT_PID=" + std::to_string(getpid()));
+    std::vector<char *> envp;
+    for (auto &e : env_strings) envp.push_back(e.data());
+    envp.push_back(nullptr);
     const pid_t pid = fork();
     if (pid < 0) throw std::runtime_error("cannot start the renderer: fork failed");
     if (pid == 0) {
-      // The renderer ends with the program.
-      prctl(PR_SET_PDEATHSIG, SIGTERM);
-      if (getppid() != parent) _exit(1);
       setpgid(0, 0);
-      execvp(argv[0], argv.data());
+      execvpe(argv[0], argv.data(), envp.data());
       std::fprintf(stderr, "[carla_canvas] cannot run '%s': %s\n", argv[0], std::strerror(errno));
       _exit(127);
     }
@@ -206,9 +218,17 @@ class Plugin {
  public:
   Plugin(Api api, Config config) : api_(api), config_(std::move(config)) {}
 
+  // At exit: no new callbacks, the worker's call cancelled and joined, the
+  // callbacks in progress finished; then the renderer it started is stopped.
   ~Plugin() {
+    api_.tsc_sensor_source_install(nullptr);
     stopping_ = true;
+    {
+      std::lock_guard<std::mutex> lock(call_mutex_);
+      if (active_call_ != nullptr) active_call_->TryCancel();
+    }
     if (worker_.joinable()) worker_.join();
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
   }
 
   bool claims(tsc_actor_t *actor, uint32_t id, const std::string &type_id) {
@@ -270,7 +290,9 @@ class Plugin {
     }
   }
 
-  // World.tick() returned `frame`: render it before the program's dispatch.
+  // World.tick() returned `frame`: render it before the program's dispatch
+  // (unless the worker already did; a frame whose render failed is retried
+  // here, so the failure reaches tick()).
   void ticked(tsc_world_t *world, uint64_t frame) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (frame <= last_frame_ || !active()) return;
@@ -296,12 +318,16 @@ class Plugin {
       if (!tick.empty()) state.sensor_tick = std::max(0.0, std::atof(tick.c_str()));
       it = sensors_.emplace(id, std::move(state)).first;
     }
+    Handle<tsc_world_t> world(api_);
+    api_.check(api_.tsc_actor_get_world(actor, world.out()), "Actor.get_world");
+    uint64_t episode = 0;
+    api_.check(api_.tsc_world_get_id(world.get(), &episode), "World.id");
     if (!world_) {
       api_.check(api_.tsc_actor_get_world(actor, world_.out()), "Actor.get_world");
       if (config_.async_render) worker_ = std::thread([this] { work(); });
     }
     connect();
-    load_world(world_.get());
+    load_world(world.get(), episode);
     return it->second;
   }
 
@@ -316,7 +342,16 @@ class Plugin {
   void call(const char *what, F &&f, double timeout = -1.0) {
     grpc::ClientContext context;
     set_timeout(context, timeout > 0 ? timeout : config_.timeout);
+    {
+      std::lock_guard<std::mutex> lock(call_mutex_);
+      if (stopping_) throw std::runtime_error("carla_canvas is shutting down");
+      active_call_ = &context;  // ~Plugin cancels it
+    }
     const grpc::Status status = f(context);
+    {
+      std::lock_guard<std::mutex> lock(call_mutex_);
+      active_call_ = nullptr;
+    }
     if (!status.ok()) {
       throw std::runtime_error(std::string("renderer ") + what + " at " + config_.endpoint +
                                " failed: " + status.error_message() + " (gRPC code " +
@@ -341,37 +376,46 @@ class Plugin {
     stub_ = pb::Renderer::NewStub(channel);
     pb::RendererInfo info;
     bool ok = get_info(info, config_.command.empty() ? config_.timeout : 1.0);
+    bool started = false;
+    // On any failure below: no half-connected stub, no renderer left running
+    // (the next connect() would start a second one).
+    auto fail = [&](const std::string &message) {
+      stub_.reset();
+      if (started) process_.stop();
+      throw std::runtime_error(message);
+    };
     if (!ok && !config_.command.empty()) {
-      process_.start(config_.command, config_.path);
+      try {
+        process_.start(config_.command, config_.path);
+      } catch (const std::exception &e) {
+        fail(e.what());
+      }
+      started = true;
       const auto until = std::chrono::steady_clock::now() +
                          std::chrono::milliseconds(static_cast<int64_t>(1000 * config_.startup_timeout));
       while (!ok && std::chrono::steady_clock::now() < until) {
         if (!process_.running()) {
-          stub_.reset();
-          throw std::runtime_error("the renderer command exited before it answered at " +
-                                   config_.endpoint);
+          fail("the renderer command exited before it answered at " + config_.endpoint);
         }
         ok = get_info(info, 1.0);
       }
     }
     if (!ok) {
-      stub_.reset();
-      throw std::runtime_error("no renderer answers at " + config_.endpoint +
-                               " (start one with `carla-canvas serve`, or set renderer.command)");
+      fail("no renderer answers at " + config_.endpoint +
+           " (start one with `carla-canvas serve`, or set renderer.command)");
     }
     if (info.protocol_version() != kProtocolVersion) {
-      stub_.reset();
-      throw std::runtime_error("the renderer at " + config_.endpoint + " speaks protocol " +
-                               std::to_string(info.protocol_version()) + ", not " +
-                               std::to_string(kProtocolVersion));
+      fail("the renderer at " + config_.endpoint + " speaks protocol " +
+           std::to_string(info.protocol_version()) + ", not " + std::to_string(kProtocolVersion));
     }
     log("rendering with '" + info.name() + "' " + info.version() + " at " + config_.endpoint);
   }
 
-  // LoadWorld once per episode; a new episode (load_world) starts over.
-  void load_world(tsc_world_t *world) {
-    uint64_t episode = 0;
-    api_.check(api_.tsc_world_get_id(world, &episode), "World.id");
+  // LoadWorld once per episode; a new episode (load_world) starts over. The
+  // episode comes from a snapshot or a fresh World: a World handle keeps the
+  // id of the episode it was made in, though it follows the client's
+  // current episode otherwise (the worker's does).
+  void load_world(tsc_world_t *world, uint64_t episode) {
     if (episode_ && *episode_ == episode) return;
     Handle<tsc_map_t> map(api_);
     api_.check(api_.tsc_world_get_map(world, map.out()), "World.get_map");
@@ -418,7 +462,9 @@ class Plugin {
     tsc_timestamp_t ts{};
     api_.check(api_.tsc_world_snapshot_get_timestamp(snapshot, &ts), "WorldSnapshot.timestamp");
     if (ts.frame <= last_frame_) return;
-    load_world(world);
+    uint64_t snapshot_id = 0;
+    api_.check(api_.tsc_world_snapshot_get_id(snapshot, &snapshot_id), "WorldSnapshot.id");
+    load_world(world, snapshot_id);
 
     const size_t n = api_.tsc_world_snapshot_size(snapshot);
     std::vector<tsc_actor_snapshot_t> actors(n);
@@ -441,7 +487,10 @@ class Plugin {
     }
     for (uint32_t id : vanished) destroyed(id);
 
+    // Nothing below is committed (frame, sensor times, known actors) until the
+    // renderer has answered: a failed frame is sent again, whole.
     pb::RenderRequest request;
+    std::vector<SensorState *> due;
     for (auto &[id, sensor] : sensors_) {
       if ((!sensor.listening && !sensor.ros) || !sensor.seen) continue;
       if (sensor.last_time >= 0.0 && sensor.sensor_tick > 0.0 &&
@@ -452,13 +501,13 @@ class Plugin {
       auto *r = request.add_sensors();
       r->set_sensor_id(id);
       r->set_deliver(sensor.listening);
-      sensor.last_time = ts.elapsed_seconds;
+      due.push_back(&sensor);
     }
-    last_frame_ = ts.frame;
-    if (request.sensors_size() == 0) return;
+    if (request.sensors_size() == 0) {
+      last_frame_ = ts.frame;
+      return;
+    }
 
-    uint64_t snapshot_id = 0;
-    api_.check(api_.tsc_world_snapshot_get_id(snapshot, &snapshot_id), "WorldSnapshot.id");
     auto *snap = request.mutable_snapshot();
     snap->set_id(snapshot_id);
     auto *t = snap->mutable_timestamp();
@@ -477,21 +526,19 @@ class Plugin {
         Handle<tsc_actor_t> actor(api_);
         if (api_.tsc_world_get_actor(world, a.id, actor.out()) == TSC_OK && actor) {
           *request.add_new_actors() = actor_info(api_, actor.get());
-          known_actors_.insert(a.id);
         }
       }
     }
-    for (auto it = known_actors_.begin(); it != known_actors_.end();) {
-      if (present.count(*it) == 0) {
-        request.add_removed_actors(*it);
-        it = known_actors_.erase(it);
-      } else {
-        ++it;
-      }
+    for (uint32_t id : known_actors_) {
+      if (present.count(id) == 0) request.add_removed_actors(id);
     }
 
     pb::RenderResponse response;
     call("Render", [&](grpc::ClientContext &c) { return stub_->Render(&c, request, &response); });
+    last_frame_ = ts.frame;
+    for (auto *sensor : due) sensor->last_time = ts.elapsed_seconds;
+    for (const auto &a : request.new_actors()) known_actors_.insert(a.id());
+    for (uint32_t id : request.removed_actors()) known_actors_.erase(id);
     for (const auto &m : response.measurements()) deliver(m);
   }
 
@@ -575,6 +622,8 @@ class Plugin {
   RendererProcess process_;
   std::thread worker_;
   std::atomic<bool> stopping_{false};
+  std::mutex call_mutex_;
+  grpc::ClientContext *active_call_ = nullptr;  // the call in progress
 };
 
 // Destroyed at exit (before typesafe_carla's statics: the plugin was loaded
@@ -594,7 +643,9 @@ int32_t guarded(F &&f) {
   return TSC_ERROR;
 }
 
+// The callbacks after ~Plugin (a call that began during exit) do nothing.
 int32_t on_claims(void *, tsc_actor_t *sensor, uint32_t id, const char *type_id, size_t len) {
+  if (!g_plugin) return 0;
   bool claimed = false;
   if (guarded([&] { claimed = g_plugin->claims(sensor, id, std::string(type_id, len)); }) != TSC_OK) {
     log("cannot decide whether to render sensor " + std::to_string(id) + ": " + tl_error);
@@ -603,24 +654,27 @@ int32_t on_claims(void *, tsc_actor_t *sensor, uint32_t id, const char *type_id,
 }
 
 int32_t on_start(void *, tsc_actor_t *sensor, uint32_t id) {
+  if (!g_plugin) return TSC_OK;
   return guarded([&] { g_plugin->start(sensor, id); });
 }
 
 void on_stop(void *, uint32_t id) {
-  guarded([&] { g_plugin->stop(id); });
+  if (g_plugin) guarded([&] { g_plugin->stop(id); });
 }
 
 int32_t on_set_ros(void *, tsc_actor_t *sensor, uint32_t id, int32_t enabled) {
+  if (!g_plugin) return TSC_OK;
   return guarded([&] { g_plugin->set_ros(sensor, id, enabled != 0); });
 }
 
-int32_t on_is_ros(void *, uint32_t id) { return g_plugin->is_ros(id) ? 1 : 0; }
+int32_t on_is_ros(void *, uint32_t id) { return g_plugin && g_plugin->is_ros(id) ? 1 : 0; }
 
 void on_destroyed(void *, uint32_t id) {
-  guarded([&] { g_plugin->destroyed(id); });
+  if (g_plugin) guarded([&] { g_plugin->destroyed(id); });
 }
 
 int32_t on_ticked(void *, tsc_world_t *world, uint64_t frame) {
+  if (!g_plugin) return TSC_OK;
   return guarded([&] { g_plugin->ticked(world, frame); });
 }
 

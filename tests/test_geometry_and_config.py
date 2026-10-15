@@ -78,7 +78,8 @@ ros: {backend: cyclonedds, domain_id: 5}
                                                           ("sensor.lidar.*", "")]
     assert c.ros.backend == "cyclonedds" and c.ros.domain_id == 5
     d = parse_config({})
-    assert [r.type for r in d.sensors] == ["sensor.camera.*", "sensor.lidar.*"]
+    assert "sensor.camera.rgb" in [r.type for r in d.sensors]
+    assert not any(r.type.endswith(".dvs") or "*" in r.type for r in d.sensors)
     for bad in ({"sensors": {"type": "x"}}, {"renderer": []}, {"ros": {"backend": "zmq"}},
                 {"renderer": {"timeout": 0}}):
         with pytest.raises(ConfigError):

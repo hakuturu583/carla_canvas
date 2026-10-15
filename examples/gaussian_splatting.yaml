@@ -19,8 +19,9 @@ renderer:
     rasterizer: auto        # gsplat on a CUDA GPU, else the (slow) numpy reference
     sh_degree: 3
     background: [0, 0, 0]
-sensors:
-  - sensor.camera.*
-  - sensor.lidar.*
+sensors:   # without this key: every camera and LiDAR type carla_canvas renders
+  - sensor.camera.rgb
+  - sensor.camera.depth
+  - sensor.lidar.ray_cast
 ros:
   backend: auto             # enable_for_ros() publishes CARLA's topics (rclpy or CycloneDDS)

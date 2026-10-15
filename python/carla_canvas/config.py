@@ -17,7 +17,11 @@ import yaml
 
 ENV_CONFIG = "CARLA_CANVAS_CONFIG"
 DEFAULT_ENDPOINT = "localhost:50051"
-DEFAULT_SENSORS = ("sensor.camera.*", "sensor.lidar.*")
+# The sensors carla_canvas renders; the other cameras and LiDARs (DVS, optical
+# flow, normals, HSS) stay CARLA's.
+DEFAULT_SENSORS = ("sensor.camera.rgb", "sensor.camera.depth",
+                   "sensor.camera.semantic_segmentation", "sensor.camera.instance_segmentation",
+                   "sensor.lidar.ray_cast", "sensor.lidar.ray_cast_semantic")
 
 
 class ConfigError(ValueError):

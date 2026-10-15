@@ -164,7 +164,7 @@ SH_C3 = (-0.5900435899266435, 2.890611442640554, -0.4570457994644658, 0.37317633
 
 
 def sh_to_rgb(sh: np.ndarray, dirs: np.ndarray, degree: int | None = None) -> np.ndarray:
-    """Colors in [0, 1] of (N, K, 3) coefficients seen along unit (N, 3)
+    """Colors (>= 0) of (N, K, 3) coefficients seen along unit (N, 3)
     directions (from the camera to the Gaussian, in the model's frame)."""
     k = sh.shape[1]
     deg = int(round(np.sqrt(k))) - 1 if degree is None else min(degree, int(round(np.sqrt(k))) - 1)
@@ -184,7 +184,7 @@ def sh_to_rgb(sh: np.ndarray, dirs: np.ndarray, degree: int | None = None) -> np
                           + SH_C3[4] * x * (4 * zz - xx - yy) * sh[:, 13]
                           + SH_C3[5] * z * (xx - yy) * sh[:, 14]
                           + SH_C3[6] * x * (xx - 3 * yy) * sh[:, 15])
-    return np.clip(result + 0.5, 0.0, 1.0)
+    return np.maximum(result + 0.5, 0.0)  # as 3DGS: only negatives clamped (pixels are clipped)
 
 
 def rgb_to_sh0(rgb: np.ndarray) -> np.ndarray:

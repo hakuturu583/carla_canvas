@@ -87,11 +87,17 @@ gives CityObjectLabels for segmentation cameras and the semantic LiDAR.
 | `sky_color`, `ground_color` | `[135, 180, 235]`, `[90, 90, 90]` | RGB |
 | `light_direction` | `[0.3, -0.4, -1.0]` | shading |
 
+The service has no authentication and merges the client's `renderer` section
+(asset paths included) over its own: keep the endpoint on localhost or a
+trusted network. A renderer started by the plugin stops with the program
+(`carla-canvas serve` watches it through `CARLA_CANVAS_PARENT_PID`).
+
 ## `sensors`
 
 A sensor is rendered by carla_canvas when a rule matches its blueprint id
-(and, if given, its `role_name` attribute). Without `sensors`, every
-`sensor.camera.*` and `sensor.lidar.*`. A rule naming a type the renderer
+(and, if given, its `role_name` attribute). Without `sensors`: the rgb,
+depth, semantic and instance segmentation cameras and both ray-cast LiDARs
+(the others, e.g. DVS, optical flow, normals, HSS LiDAR, stay CARLA's). A rule naming a type the renderer
 cannot draw makes that sensor's `listen()` fail.
 
 ## `ros`

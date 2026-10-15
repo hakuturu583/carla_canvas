@@ -54,6 +54,9 @@ sensors:
   CHECK(claims_sensor(defaults, "sensor.camera.depth", ""));
   CHECK(claims_sensor(defaults, "sensor.lidar.ray_cast_semantic", ""));
   CHECK(!claims_sensor(defaults, "sensor.other.gnss", ""));
+  CHECK(!claims_sensor(defaults, "sensor.camera.dvs", ""));  // not rendered: CARLA's
+  const auto nulls = load_config(write("nulls", "renderer: ~\nsensors: ~\n"));
+  CHECK(nulls.endpoint == "localhost:50051" && claims_sensor(nulls, "sensor.camera.rgb", ""));
 
   bool threw = false;
   try {

@@ -5,8 +5,9 @@ renderer:
   backend: primitives
   endpoint: "localhost:50051"
   command: [carla-canvas, serve, --config, "{config}"]
-sensors:
-  - sensor.camera.*
-  - sensor.lidar.*
+sensors:   # without this key: every camera and LiDAR type carla_canvas renders
+  - sensor.camera.rgb
+  - sensor.camera.depth
+  - sensor.lidar.ray_cast
 ros:
   backend: none

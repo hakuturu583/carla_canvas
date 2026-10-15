@@ -9,7 +9,10 @@ or ``carla-canvas serve --config canvas.yaml`` for a configured backend.
 from __future__ import annotations
 
 import logging
+import os
 import pkgutil
+import threading
+import time
 from concurrent import futures
 
 import grpc
@@ -70,6 +73,7 @@ def serve(renderer: Renderer, endpoint: str = "localhost:50051",
           config: CanvasConfig | None = None) -> None:
     server, service, port = start(renderer, endpoint, config)
     log.info("carla_canvas renderer '%s' listening at %s", renderer.name, endpoint)
+    _watch_parent(server)
     try:
         server.wait_for_termination()
     except KeyboardInterrupt:
@@ -79,6 +83,22 @@ def serve(renderer: Renderer, endpoint: str = "localhost:50051",
         renderer.close()
         if service.ros is not None:
             service.ros.close()
+
+
+def _watch_parent(server) -> None:
+    """Started by the client plugin (CARLA_CANVAS_PARENT_PID): stop when that
+    program is gone, even if it could not stop us (killed, crashed)."""
+    pid = os.environ.get("CARLA_CANVAS_PARENT_PID")
+    if not pid:
+        return
+
+    def watch() -> None:
+        while os.getppid() == int(pid):
+            time.sleep(1.0)
+        log.info("the program that started this renderer is gone: stopping")
+        server.stop(grace=0)
+
+    threading.Thread(target=watch, name="carla_canvas-parent", daemon=True).start()
 
 
 __all__ = ["BUILTIN_BACKENDS", "RendererService", "load_backend", "make_service", "serve", "start"]

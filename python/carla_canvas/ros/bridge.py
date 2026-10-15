@@ -145,7 +145,8 @@ class RosBridge:
         chain = parent_chain(scene, sensor)
         name = ros_name(sensor)
         base = "/carla/" + (chain + "/" if chain else "") + name
-        return _Published(base, name, chain.rsplit("/", 1)[-1] if chain else "map")
+        # CARLA's ParentFrameOrMap(BuildParentChain(actor)): the whole chain
+        return _Published(base, name, chain or "map")
 
     def _publisher(self, topic: str, msg_type):
         pub = self._publishers.get(topic)

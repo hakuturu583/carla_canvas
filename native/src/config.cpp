@@ -51,6 +51,10 @@ google::protobuf::Value to_value(const YAML::Node &node) {
   return v;
 }
 
+constexpr const char *kDefaultSensors[] = {
+    "sensor.camera.rgb",          "sensor.camera.depth",   "sensor.camera.semantic_segmentation",
+    "sensor.camera.instance_segmentation", "sensor.lidar.ray_cast", "sensor.lidar.ray_cast_semantic"};
+
 [[noreturn]] void bad(const std::string &path, const std::string &what) {
   throw std::runtime_error("carla_canvas config '" + path + "': " + what);
 }
@@ -68,7 +72,8 @@ Config load_config(const std::string &path) {
   Config config;
   config.path = path;
   try {
-    if (const auto renderer = root["renderer"]) {
+    // A key given as null (`renderer: ~`) is the same as an absent one.
+    if (const auto renderer = root["renderer"]; renderer && !renderer.IsNull()) {
       if (!renderer.IsMap()) bad(path, "`renderer` must be a mapping");
       config.renderer = to_struct(renderer);
       if (renderer["endpoint"]) config.endpoint = renderer["endpoint"].as<std::string>();
@@ -84,9 +89,10 @@ Config load_config(const std::string &path) {
       if (renderer["async"]) config.async_render = renderer["async"].as<bool>();
     }
     const auto sensors = root["sensors"];
-    if (!sensors) {
-      // Default: the cameras and LiDARs a renderer can draw.
-      config.sensors = {{"sensor.camera.*", ""}, {"sensor.lidar.*", ""}};
+    if (!sensors || sensors.IsNull()) {
+      // Default: the sensors carla_canvas renders (the other cameras and
+      // LiDARs, DVS, optical flow, normals, HSS, stay CARLA's).
+      for (const char *type : kDefaultSensors) config.sensors.push_back({type, ""});
     } else if (!sensors.IsSequence()) {
       bad(path, "`sensors` must be a list of {type, role_name} rules");
     } else {

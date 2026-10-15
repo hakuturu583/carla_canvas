@@ -62,7 +62,9 @@ class LidarSimulator:
     def scan(self, renderer: Renderer, scene: Scene, pose: Transform, delta_seconds: float,
              ignore_actors: frozenset[int] = frozenset()) -> LidarScan:
         s = self.spec
-        points_per_laser = int(s.points_per_second * max(delta_seconds, 0.0) / s.channels)
+        # RoundHalfFromZero, as RayCastLidar
+        points_per_laser = int(math.floor(s.points_per_second * max(delta_seconds, 0.0)
+                                          / s.channels + 0.5))
         tick_angle = s.rotation_frequency * s.horizontal_fov * max(delta_seconds, 0.0)
         if points_per_laser <= 0:
             return self._finish(np.zeros((0, 3)), np.zeros(0, int), None, None, tick_angle)
