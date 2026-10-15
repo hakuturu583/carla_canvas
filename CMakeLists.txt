@@ -8,6 +8,15 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# The sensor plugin needs gRPC C++, protobuf, yaml-cpp and typesafe_carla's
+# header. Without them (a renderer-only install: the Python SDK is all a
+# renderer host needs) it is skipped, unless CARLA_CANVAS_REQUIRE_PLUGIN is ON.
+option(CARLA_CANVAS_REQUIRE_PLUGIN "Fail when the sensor plugin cannot be built" OFF)
+find_package(Threads REQUIRED)
+find_package(Protobuf QUIET)
+find_package(gRPC CONFIG QUIET)
+find_package(yaml-cpp QUIET)
+find_program(GRPC_CPP_PLUGIN grpc_cpp_plugin)
 # ---------------------------------------------------------------------------
 # typesafe_carla's C ABI header (typesafe_carla/ffi.h, ABI 5.3 or later).
 # The plugin does not link against the library (it gets the functions through
@@ -34,9 +43,22 @@ if(NOT TYPESAFE_CARLA_INCLUDE_DIR AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../typesafe_carla/native/include/typesafe_carla/ffi.h")
   set(TYPESAFE_CARLA_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../typesafe_carla/native/include")
 endif()
+set(_missing "")
 if(NOT EXISTS "${TYPESAFE_CARLA_INCLUDE_DIR}/typesafe_carla/ffi.h")
-  message(FATAL_ERROR "typesafe_carla/ffi.h not found: install typesafe-carla in the build "
-                      "environment or set TYPESAFE_CARLA_INCLUDE_DIR")
+  list(APPEND _missing "typesafe_carla/ffi.h (install typesafe-carla or set TYPESAFE_CARLA_INCLUDE_DIR)")
+endif()
+foreach(_dep Protobuf_FOUND gRPC_FOUND yaml-cpp_FOUND GRPC_CPP_PLUGIN)
+  if(NOT ${_dep})
+    list(APPEND _missing "${_dep}")
+  endif()
+endforeach()
+if(_missing)
+  if(CARLA_CANVAS_REQUIRE_PLUGIN)
+    message(FATAL_ERROR "carla_canvas: cannot build the sensor plugin, missing: ${_missing}")
+  endif()
+  message(WARNING "carla_canvas: not building the sensor plugin (renderer-only install), "
+                  "missing: ${_missing}")
+  return()
 endif()
 message(STATUS "carla_canvas: typesafe_carla header from ${TYPESAFE_CARLA_INCLUDE_DIR}")
 
@@ -44,11 +66,6 @@ message(STATUS "carla_canvas: typesafe_carla header from ${TYPESAFE_CARLA_INCLUD
 # gRPC / protobuf / yaml-cpp (Ubuntu: libgrpc++-dev protobuf-compiler-grpc
 # libprotobuf-dev protobuf-compiler libyaml-cpp-dev)
 # ---------------------------------------------------------------------------
-find_package(Threads REQUIRED)
-find_package(Protobuf REQUIRED)
-find_package(gRPC CONFIG REQUIRED)
-find_package(yaml-cpp REQUIRED)
-find_program(GRPC_CPP_PLUGIN grpc_cpp_plugin REQUIRED)
 
 set(_proto_dir "${CMAKE_CURRENT_SOURCE_DIR}/proto")
 set(_proto "${_proto_dir}/carla_canvas/v1/renderer.proto")

@@ -30,10 +30,11 @@ jobs:
           uv venv
           uv pip install scikit-build-core grpcio grpcio-tools protobuf numpy pyyaml pytest cyclonedds
           TSC_BACKEND=mock uv pip install ./typesafe_carla
-          uv pip install --no-build-isolation -e .
+          uv pip install --no-build-isolation --no-deps -e .
       - name: Native tests
         run: |
-          cmake -S . -B build -DTYPESAFE_CARLA_INCLUDE_DIR=$PWD/typesafe_carla/native/include
+          cmake -S . -B build -DCARLA_CANVAS_REQUIRE_PLUGIN=ON \
+            -DTYPESAFE_CARLA_INCLUDE_DIR=$PWD/typesafe_carla/native/include
           cmake --build build -j
           ctest --test-dir build --output-on-failure
       - name: Python tests

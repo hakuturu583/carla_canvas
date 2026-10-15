@@ -70,12 +70,15 @@ See [docs/design.md](docs/design.md).
 ## Install
 
 ```sh
-# system libraries for the plugin (Ubuntu 24.04)
+# the client (where the typesafe_carla program runs): the plugin needs these (Ubuntu 24.04)
 sudo apt install g++ cmake libgrpc++-dev protobuf-compiler-grpc libprotobuf-dev \
                  protobuf-compiler libyaml-cpp-dev
-pip install carla-canvas            # + typesafe-carla (with the sensor source ABI, 5.3)
+pip install 'carla-canvas[client]'  # + typesafe-carla (with the sensor source ABI, 5.3)
 pip install 'carla-canvas[ros]'     # ROS 2 output over DDS without a ROS installation
-pip install 'carla-canvas[gsplat]'  # GPU Gaussian splatting (CUDA)
+
+# a renderer host only needs the Python SDK (the plugin is skipped without gRPC C++)
+pip install carla-canvas            # e.g. next to splatsim on a GPU machine
+pip install 'carla-canvas[gsplat]'  # the built-in Gaussian splatting on CUDA
 ```
 
 ## Use
