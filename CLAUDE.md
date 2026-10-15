@@ -17,8 +17,11 @@ PATH=$PWD/.venv/bin:$PATH .venv/bin/python -m pytest     # e2e tests run Codon p
 CARLA_CANVAS_CONFIG=examples/primitives.yaml typesafe-codon run examples/camera_lidar.py
 ```
 
-System packages for the plugin: `libgrpc++-dev protobuf-compiler-grpc
-libprotobuf-dev protobuf-compiler libyaml-cpp-dev`.
+The plugin uses the system's gRPC C++, protobuf and yaml-cpp (`libgrpc++-dev
+protobuf-compiler-grpc libprotobuf-dev protobuf-compiler libyaml-cpp-dev`), or
+builds them from source with `-DCARLA_CANVAS_FETCH_DEPS=ON` (`cmake/FetchDeps.cmake`,
+pinned versions; what the release wheels do: `.github/actions/wheel`,
+`tools/check_wheel.py`).
 
 ## Rules
 

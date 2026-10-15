@@ -70,18 +70,20 @@ See [docs/design.md](docs/design.md).
 ## Install
 
 ```sh
-# the client (where the typesafe_carla program runs): the plugin needs these (Ubuntu 24.04)
-sudo apt install g++ cmake libgrpc++-dev protobuf-compiler-grpc libprotobuf-dev \
-                 protobuf-compiler libyaml-cpp-dev
-# the plugin is built against the installed typesafe-carla's header (sensor
-# source ABI 5.3): install that first and build without isolation
-pip install 'typesafe-carla>0.8.1' scikit-build-core
-pip install --no-build-isolation 'carla-canvas[client]'
+pip install 'carla-canvas[client]'  # the client (where the typesafe_carla program runs) + typesafe-carla
 pip install 'carla-canvas[ros]'     # ROS 2 output over DDS without a ROS installation
-
-# a renderer host only needs the Python SDK (the plugin is skipped without gRPC C++)
-pip install carla-canvas            # e.g. next to splatsim on a GPU machine
+pip install carla-canvas            # a renderer host, e.g. next to splatsim on a GPU machine
 pip install 'carla-canvas[gsplat]'  # the built-in Gaussian splatting on CUDA
+```
+
+The wheels (Linux x86_64 and aarch64, manylinux_2_28) carry the sensor plugin
+with gRPC, protobuf and yaml-cpp linked in: no system packages. A source build
+(another platform, or `--no-binary carla-canvas`) uses the system's gRPC C++,
+protobuf and yaml-cpp when they are installed, or builds them from source:
+
+```sh
+pip install --no-binary carla-canvas 'carla-canvas[client]' \
+  -C cmake.define.CARLA_CANVAS_FETCH_DEPS=ON      # needs a C++17 compiler and git; ~20 min
 ```
 
 ## Use

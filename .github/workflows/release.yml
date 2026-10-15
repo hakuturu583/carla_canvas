@@ -1,0 +1,88 @@
+# Builds carla-canvas's wheels and sdist and publishes them to PyPI.
+#
+# The wheels carry the sensor plugin with gRPC, protobuf and yaml-cpp built
+# from source and linked in statically (CARLA_CANVAS_FETCH_DEPS), so
+# `pip install 'carla-canvas[client]'` needs no system packages: one
+# py3-none-manylinux_2_28 wheel per architecture.
+#
+#   push a tag v<version>   builds and publishes to PyPI (the tag must match
+#                           python/carla_canvas/__init__.py)
+#   workflow_dispatch       a dry run: builds and checks; with publish=true it
+#                           uploads to TestPyPI
+#
+# Publishing uses PyPI Trusted Publishing (OIDC) from the "pypi" / "testpypi"
+# environments: register this workflow as the project's trusted publisher on
+# both indexes. No API tokens are stored.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Upload to TestPyPI"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          version=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' python/carla_canvas/__init__.py)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the package version $version"
+            exit 1
+          fi
+
+  wheel:
+    name: wheel (${{ matrix.arch.name }})
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - { name: x86_64, runner: ubuntu-24.04 }
+          - { name: aarch64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.arch.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/wheel
+        with:
+          arch: ${{ matrix.arch.name }}
+      - uses: actions/upload-artifact@v4
+        with: { name: "dist-wheel-${{ matrix.arch.name }}", path: dist/*.whl }
+
+  sdist:
+    needs: version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pipx run build --sdist
+      - uses: actions/upload-artifact@v4
+        with: { name: dist-sdist, path: dist/*.tar.gz }
+
+  publish:
+    needs: [version, wheel, sdist]
+    if: github.ref_type == 'tag' || inputs.publish
+    runs-on: ubuntu-24.04
+    environment: ${{ github.ref_type == 'tag' && 'pypi' || 'testpypi' }}
+    permissions:
+      id-token: write  # Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { pattern: "dist-*", path: dist, merge-multiple: true }
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: ${{ github.ref_type == 'tag' && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
