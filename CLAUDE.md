@@ -23,6 +23,11 @@ builds them from source with `-DCARLA_CANVAS_FETCH_DEPS=ON` (`cmake/FetchDeps.cm
 pinned versions; what the release wheels do: `.github/actions/wheel`,
 `tools/check_wheel.py`).
 
+Releases: a PR merged to main with one `release:major|minor|patch` label is
+released by `.github/workflows/release.yml` (bumps `__version__` with
+`tools/bump_version.py`, tags `v<version>`, publishes to PyPI). Do not bump the
+version or tag by hand.
+
 ## Rules
 
 - The user's program never changes: everything is chosen by the file in

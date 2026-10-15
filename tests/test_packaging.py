@@ -43,3 +43,19 @@ def test_version_is_in_one_place():
     text = (ROOT / "pyproject.toml").read_text()
     assert 'dynamic = ["version"]' in text
     assert re.fullmatch(r"\d+\.\d+\.\d+", carla_canvas.__version__)
+
+
+def test_bump_version(tmp_path):
+    sys.path.insert(0, str(ROOT / "tools"))
+    try:
+        import bump_version as bv
+    finally:
+        sys.path.pop(0)
+    assert bv.current_version() == carla_canvas.__version__
+    assert [bv.next_version("1.2.3", s) for s in ("patch", "minor", "major", "2.0.0")] == \
+        ["1.2.4", "1.3.0", "2.0.0", "2.0.0"]
+    with pytest.raises(SystemExit):
+        bv.next_version("1.2.3", "huge")
+    f = tmp_path / "__init__.py"
+    f.write_text('"""doc"""\n\n__version__ = "0.1.0"\n')
+    assert bv.bump("minor", f) == "0.2.0" and bv.current_version(f) == "0.2.0"

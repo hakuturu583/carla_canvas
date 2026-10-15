@@ -3,6 +3,7 @@
 # in statically (CARLA_CANVAS_FETCH_DEPS), checked as installed. Shared by CI and
 # the release workflow; the dependencies' build is cached between runs.
 name: carla-canvas wheel
+description: Builds and checks one carla-canvas manylinux wheel for an architecture
 inputs:
   arch:
     description: x86_64 or aarch64 (the runner's)

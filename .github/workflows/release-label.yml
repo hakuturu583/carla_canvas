@@ -1,0 +1,45 @@
+# The release labels of the auto-release (release.yml): a PR merged to main with
+# release:major, release:minor or release:patch is released; with none, it is
+# not. This creates the labels if they are missing and fails a PR that carries
+# more than one.
+name: Release label
+
+on:
+  pull_request:
+    types: [opened, reopened, labeled, unlabeled, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  label:
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write  # creating the labels
+    steps:
+      - name: Create the release labels
+        # A fork's PR gets a read-only token: the labels are created by the next
+        # PR from this repository instead.
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh label create release:major --repo "$REPO" --color b60205 --force \
+            --description "Merging releases a new major version (X.0.0)"
+          gh label create release:minor --repo "$REPO" --color fbca04 --force \
+            --description "Merging releases a new minor version (x.Y.0)"
+          gh label create release:patch --repo "$REPO" --color 0e8a16 --force \
+            --description "Merging releases a new patch version (x.y.Z)"
+      - name: At most one release label
+        env:
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          count=$(echo "$LABELS" | jq '[.[] | select(test("^release:(major|minor|patch)$"))] | length')
+          if [ "$count" -gt 1 ]; then
+            echo "::error::More than one release label: pick one of release:major, release:minor, release:patch"
+            exit 1
+          fi
+          if [ "$count" -eq 0 ]; then
+            echo "No release label: merging does not release"
+          fi
