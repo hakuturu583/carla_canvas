@@ -27,6 +27,7 @@ class PrimitiveRenderer(Renderer):
     name = "primitives"
     version = "1"
     camera_outputs = frozenset({"rgb", "depth", "semantic", "instance"})
+    semantic_lidar = True  # cast_rays fills the semantic fields
 
     def __init__(self, options=None):
         super().__init__(options)

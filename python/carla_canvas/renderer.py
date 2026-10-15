@@ -120,7 +120,8 @@ class Renderer(ABC):
     def render_camera(self, view: CameraView) -> CameraFrame:
         """Render the outputs view.outputs asks for (a subset of camera_outputs)."""
 
-    #: whether an overridden cast_lidar_rays fills the semantic LiDAR's fields
+    #: whether an overridden cast_lidar_rays (or cast_rays) fills the semantic
+    #: LiDAR's fields (RayHits.semantic, actor_id, normal)
     semantic_lidar = False
 
     def cast_rays(self, scene: Scene, origins: np.ndarray, directions: np.ndarray,
@@ -157,8 +158,8 @@ class Renderer(ABC):
         native = type(self).cast_lidar_rays is not Renderer.cast_lidar_rays
         if not (native or self.supports_rays or "depth" in self.camera_outputs):
             return []
-        semantic = self.supports_rays or (self.semantic_lidar if native
-                                          else "semantic" in self.camera_outputs)
+        semantic = (self.semantic_lidar if native or self.supports_rays
+                    else "semantic" in self.camera_outputs)
         return ["sensor.lidar.ray_cast"] + (["sensor.lidar.ray_cast_semantic"] if semantic else [])
 
     def close(self) -> None:

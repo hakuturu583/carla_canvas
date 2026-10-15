@@ -289,3 +289,35 @@ def test_a_retried_frame_and_a_paused_lidar(make_server):
     # listened again 100 frames later: at most a revolution (8000 pts/s at 10 Hz)
     later = stub.Render(snapshot_request(107, poses(), sensors=[(LIDAR, True)]))
     assert sum(later.measurements[0].lidar.points_per_channel) <= 800
+
+
+def test_semantic_lidar_needs_semantic_ray_hits():
+    from carla_canvas.renderer import RayHits
+
+    class DistanceOnly(Renderer):
+        camera_outputs = frozenset({"rgb"})
+
+        def load_world(self, world):
+            pass
+
+        def render_camera(self, view):
+            return CameraFrame()
+
+        def cast_rays(self, scene, origins, directions, max_distance, ignore_actors=frozenset()):
+            return RayHits(np.full(len(directions), np.inf))
+
+    assert DistanceOnly({}).lidar_types == ["sensor.lidar.ray_cast"]
+    assert "sensor.lidar.ray_cast_semantic" in PrimitiveRenderer().lidar_types
+
+
+def test_auto_ros_without_ros_packages(monkeypatch):
+    from carla_canvas.ros import transports
+
+    def missing(*args):
+        raise transports.TransportError("not installed")
+
+    monkeypatch.setattr(transports, "RclpyTransport", missing)
+    monkeypatch.setattr(transports, "CycloneDdsTransport", missing)
+    assert transports.make_transport("auto") is None
+    with pytest.raises(transports.TransportError):
+        transports.make_transport("cyclonedds")

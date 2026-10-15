@@ -73,7 +73,10 @@ See [docs/design.md](docs/design.md).
 # the client (where the typesafe_carla program runs): the plugin needs these (Ubuntu 24.04)
 sudo apt install g++ cmake libgrpc++-dev protobuf-compiler-grpc libprotobuf-dev \
                  protobuf-compiler libyaml-cpp-dev
-pip install 'carla-canvas[client]'  # + typesafe-carla (with the sensor source ABI, 5.3)
+# the plugin is built against the installed typesafe-carla's header (sensor
+# source ABI 5.3): install that first and build without isolation
+pip install 'typesafe-carla>0.8.1' scikit-build-core
+pip install --no-build-isolation 'carla-canvas[client]'
 pip install 'carla-canvas[ros]'     # ROS 2 output over DDS without a ROS installation
 
 # a renderer host only needs the Python SDK (the plugin is skipped without gRPC C++)

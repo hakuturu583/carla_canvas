@@ -6,19 +6,22 @@
   receive the messages, and no ROS installation is needed.
 * ``rclpy``: a ROS 2 node, when the program runs in a sourced ROS 2
   environment.
-* ``auto``: rclpy if it imports, else cyclonedds.
+* ``auto``: rclpy if it imports, else cyclonedds, else none.
 * ``memory``: records messages (tests).
 """
 
 from __future__ import annotations
 
 import dataclasses
+import logging
 import os
 import threading
 from abc import ABC, abstractmethod
 from typing import Any
 
 from . import messages as m
+
+log = logging.getLogger(__name__)
 
 
 class TransportError(RuntimeError):
@@ -197,8 +200,15 @@ def make_transport(backend: str = "auto", domain_id: int | None = None) -> Trans
     if backend == "cyclonedds":
         return CycloneDdsTransport(domain_id)
     if backend == "auto":
+        # rclpy in a sourced ROS 2 environment, else CycloneDDS, else none
+        # (enable_for_ros() then fails with this message)
         try:
             return RclpyTransport(domain_id)
         except TransportError:
+            pass
+        try:
             return CycloneDdsTransport(domain_id)
+        except TransportError as e:
+            log.info("no ROS 2 transport: %s", e)
+            return None
     raise TransportError(f"unknown ROS backend {backend!r}")

@@ -145,7 +145,8 @@ class RendererService(pb_grpc.RendererServicer):
             self.ros.set_enabled(request.sensor_id, request.enabled)
         elif request.enabled:
             raise RenderError(grpc.StatusCode.FAILED_PRECONDITION,
-                              "ROS 2 output is off (ros.backend: none)")
+                              "ROS 2 output is off (ros.backend: none, or no rclpy or "
+                              "cyclonedds for auto: pip install 'carla-canvas[ros]')")
         return pb.EnableForRosResponse()
 
     @_rpc

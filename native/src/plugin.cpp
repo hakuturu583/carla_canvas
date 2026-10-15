@@ -295,13 +295,21 @@ class Plugin {
   // here, so the failure reaches tick()).
   void ticked(tsc_world_t *world, uint64_t frame) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    if (frame <= last_frame_ || !active()) return;
+    if (!active()) return;
+    uint64_t episode = 0;
+    api_.check(api_.tsc_world_get_id(world, &episode), "World.id");
+    if (rendered(episode, frame)) return;
     Handle<tsc_world_snapshot_t> snapshot(api_);
     api_.check(api_.tsc_world_get_snapshot(world, snapshot.out()), "World.get_snapshot");
     render(world, snapshot.get());
   }
 
  private:
+  // Frame numbers restart with a new episode (load_world).
+  bool rendered(uint64_t episode, uint64_t frame) const {
+    return episode_ && *episode_ == episode && frame <= last_frame_;
+  }
+
   bool active() const {
     for (const auto &[id, s] : sensors_) {
       if (s.listening || s.ros) return true;
@@ -322,9 +330,12 @@ class Plugin {
     api_.check(api_.tsc_actor_get_world(actor, world.out()), "Actor.get_world");
     uint64_t episode = 0;
     api_.check(api_.tsc_world_get_id(world.get(), &episode), "World.id");
-    if (!world_) {
-      api_.check(api_.tsc_actor_get_world(actor, world_.out()), "Actor.get_world");
-      if (config_.async_render) worker_ = std::thread([this] { work(); });
+    if (config_.async_render && worker_episode_ != episode) {
+      // The worker waits on this episode's World (an old one expires with
+      // load_world): it picks it up at its next wait.
+      api_.check(api_.tsc_actor_get_world(actor, next_world_.out()), "Actor.get_world");
+      worker_episode_ = episode;
+      if (!worker_.joinable()) worker_ = std::thread([this] { work(); });
     }
     connect();
     load_world(world.get(), episode);
@@ -432,6 +443,7 @@ class Plugin {
     call("LoadWorld", [&](grpc::ClientContext &c) { return stub_->LoadWorld(&c, request, &response); },
          std::max(config_.timeout, config_.startup_timeout));
     episode_ = episode;
+    last_frame_ = 0;
     known_actors_.clear();
     for (auto &[id, s] : sensors_) s.spawned = false;
   }
@@ -461,9 +473,9 @@ class Plugin {
   void render(tsc_world_t *world, const tsc_world_snapshot_t *snapshot) {
     tsc_timestamp_t ts{};
     api_.check(api_.tsc_world_snapshot_get_timestamp(snapshot, &ts), "WorldSnapshot.timestamp");
-    if (ts.frame <= last_frame_) return;
     uint64_t snapshot_id = 0;
     api_.check(api_.tsc_world_snapshot_get_id(snapshot, &snapshot_id), "WorldSnapshot.id");
+    if (rendered(snapshot_id, ts.frame)) return;
     load_world(world, snapshot_id);
 
     const size_t n = api_.tsc_world_snapshot_size(snapshot);
@@ -594,13 +606,22 @@ class Plugin {
   // renders each frame once.
   void work() {
     std::string last_error;
+    Handle<tsc_world_t> world(api_);
     while (!stopping_) {
+      {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        if (next_world_) world.swap(next_world_);
+        next_world_.reset();
+      }
       Handle<tsc_world_snapshot_t> snapshot(api_);
-      if (api_.tsc_world_wait_for_tick(world_.get(), 0.2, snapshot.out()) != TSC_OK) continue;
+      if (api_.tsc_world_wait_for_tick(world.get(), 0.2, snapshot.out()) != TSC_OK) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));  // an expired episode fails at once
+        continue;
+      }
       try {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         if (!active()) continue;
-        render(world_.get(), snapshot.get());
+        render(world.get(), snapshot.get());
         last_error.clear();
       } catch (const std::exception &e) {
         if (e.what() != last_error) log(e.what());
@@ -617,7 +638,8 @@ class Plugin {
   std::set<uint32_t> known_actors_;
   std::optional<uint64_t> episode_;
   uint64_t last_frame_ = 0;
-  Handle<tsc_world_t> world_{api_};  // for the worker
+  Handle<tsc_world_t> next_world_{api_};  // handed to the worker
+  std::optional<uint64_t> worker_episode_;  // of the last World handed over
   std::unique_ptr<pb::Renderer::Stub> stub_;
   RendererProcess process_;
   std::thread worker_;

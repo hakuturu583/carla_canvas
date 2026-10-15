@@ -81,8 +81,9 @@ CARLA's `exp(-attenuation · d)`), `normal`, `semantic`, `actor_id`. Override
 it for a native LiDAR (set `semantic_lidar = True` if it fills the semantic
 fields); carla_canvas still applies CARLA's drop-off, noise and layout.
 Without an override it uses `cast_rays(scene, origins, directions,
-max_distance, ignore_actors)` when the renderer has exact ray casts, else
-depth images (`renderer.options.lidar_pixels_per_degree`).
+max_distance, ignore_actors)` when the renderer has exact ray casts (again
+`semantic_lidar = True` if they fill the semantic fields), else depth images
+(`renderer.options.lidar_pixels_per_degree`).
 
 ## splatsim
 

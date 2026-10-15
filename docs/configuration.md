@@ -106,8 +106,8 @@ cannot draw makes that sensor's `listen()` fail.
 ## `ros`
 
 `auto` uses rclpy when it imports (a sourced ROS 2 environment), else
-CycloneDDS (`pip install 'carla-canvas[ros]'`). `none` turns ROS off:
-`enable_for_ros()` on a rendered sensor then fails.
+CycloneDDS (`pip install 'carla-canvas[ros]'`), else none. `none` turns ROS
+off: `enable_for_ros()` on a rendered sensor then fails.
 
 ## Environment
 

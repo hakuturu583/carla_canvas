@@ -35,7 +35,7 @@ so no renderer implements DDS and nodes cannot tell the difference.
 |---|---|
 | `cyclonedds` | plain DDS (`pip install 'carla-canvas[ros]'`), no ROS installation: ROS 2 type names (`sensor_msgs::msg::dds_::Image_`), topic names `rt/carla/...`, QoS reliable / volatile / keep last 10. ROS 2 nodes on Cyclone DDS or Fast DDS receive them in the same `ROS_DOMAIN_ID` |
 | `rclpy` | a node `carla_canvas` in a sourced ROS 2 environment |
-| `auto` | rclpy if it imports, else cyclonedds |
+| `auto` | rclpy if it imports, else cyclonedds, else none (`enable_for_ros()` fails) |
 | `none` | off: `enable_for_ros()` on a rendered sensor fails |
 
 The transports take carla_canvas's own message dataclasses

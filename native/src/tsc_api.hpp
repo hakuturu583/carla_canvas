@@ -8,6 +8,7 @@
 
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace carla_canvas {
 
@@ -84,6 +85,7 @@ class Handle {
     h_ = nullptr;
   }
   explicit operator bool() const { return h_ != nullptr; }
+  void swap(Handle &other) { std::swap(h_, other.h_); }
 
  private:
   const Api *api_;
