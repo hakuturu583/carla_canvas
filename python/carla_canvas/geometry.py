@@ -15,14 +15,60 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-#: Unreal's left-handed world (y right) <-> the right-handed one with y negated
-#: (y left: OpenDRIVE, ROS). Applied on both sides of a pose it also turns the
-#: body's x forward / y right / z up axes into x forward / y left / z up (FLU).
+#: The coordinate frames a renderer can work in (``Renderer.coordinate_frame``):
+#:
+#: * ``carla``: CARLA's, Unreal's left-handed frame (world and bodies x forward,
+#:   y right, z up);
+#: * ``right_handed``: the same with y negated (y left), world and bodies: the
+#:   frame of OpenDRIVE, ROS and CARLA's ROS publisher (TransformFromCarlaRotation);
+#:   body axes x forward, y left, z up (FLU).
+COORDINATE_FRAMES = ("carla", "right_handed")
+
+#: Unreal's y right <-> y left; on both sides of a pose it is the change of frame.
 FLIP_Y = np.diag([1.0, -1.0, 1.0])
 
-#: sensor axes (x forward, y right, z up) -> OpenCV camera axes (x right, y down,
-#: z forward): row i is camera axis i in sensor coordinates.
-CV_FROM_SENSOR = np.array([[0.0, 1.0, 0.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]])
+#: OpenCV camera axes (x right, y down, z forward) in a sensor's body axes: row
+#: i is camera axis i; per coordinate frame (body y right, or y left).
+CV_FROM_BODY = {
+    "carla": np.array([[0.0, 1.0, 0.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]]),
+    "right_handed": np.array([[0.0, -1.0, 0.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]]),
+}
+
+
+def check_frame(frame: str) -> str:
+    if frame not in COORDINATE_FRAMES:
+        raise ValueError(f"coordinate frame {frame!r}: one of {', '.join(COORDINATE_FRAMES)}")
+    return frame
+
+
+def to_frame(pose: np.ndarray, frame: str) -> np.ndarray:
+    """A 4x4 CARLA pose in ``frame`` (and back: the change is an involution)."""
+    if check_frame(frame) == "carla":
+        return np.asarray(pose, dtype=float)
+    m = np.asarray(pose, dtype=float)
+    out = np.eye(4)
+    out[:3, :3] = FLIP_Y @ m[:3, :3] @ FLIP_Y
+    out[:3, 3] = FLIP_Y @ m[:3, 3]
+    return out
+
+
+def vectors_to_frame(v: np.ndarray, frame: str) -> np.ndarray:
+    """(..., 3) points or directions of CARLA's frame in ``frame`` (and back)."""
+    v = np.asarray(v, dtype=float)
+    return v if check_frame(frame) == "carla" else v * (1.0, -1.0, 1.0)
+
+
+def view_matrix_cv(pose: np.ndarray, frame: str = "carla") -> np.ndarray:
+    """4x4 world-to-camera (OpenCV: x right, y down, z forward) of a camera
+    looking along its body x, given its 4x4 body-to-world pose in ``frame``'s
+    conventions. The world may be any one reached from that frame by a proper
+    rigid map (a renderer's scene frame): only the body axes' convention counts."""
+    m = np.asarray(pose, dtype=float)
+    r = CV_FROM_BODY[check_frame(frame)] @ m[:3, :3].T
+    view = np.eye(4)
+    view[:3, :3] = r
+    view[:3, 3] = -r @ m[:3, 3]
+    return view
 
 
 @dataclass(frozen=True)
@@ -43,17 +89,13 @@ class Transform:
         """3x3: column i is the actor's axis i (forward, right, up) in world coordinates."""
         return rotation_matrix(*self.rotation)
 
-    def matrix(self) -> np.ndarray:
-        """4x4 local-to-world matrix."""
+    def matrix(self, frame: str = "carla") -> np.ndarray:
+        """4x4 local-to-world matrix, in CARLA's frame or another coordinate
+        frame (:data:`COORDINATE_FRAMES`, :func:`to_frame`)."""
         m = np.eye(4)
         m[:3, :3] = self.rotation_matrix()
         m[:3, 3] = self.location
-        return m
-
-    def right_handed_matrix(self) -> np.ndarray:
-        """4x4 body-to-world in the right-handed frame (y negated, see
-        :func:`right_handed`): what OpenDRIVE- or ROS-framed renderers take."""
-        return right_handed(self.matrix())
+        return to_frame(m, frame)
 
     def inverse_matrix(self) -> np.ndarray:
         """4x4 world-to-local matrix."""
@@ -131,7 +173,7 @@ class PinholeCamera:
     def world_to_camera_cv(self) -> np.ndarray:
         """4x4 world-to-camera matrix in the OpenCV convention (x right, y down,
         z forward), what most splatting rasterizers take as the view matrix."""
-        return view_matrix_cv(self.pose.location, self.pose.rotation_matrix())
+        return view_matrix_cv(self.pose.matrix())
 
 
 @functools.lru_cache(maxsize=32)
@@ -154,39 +196,10 @@ def rotation_from_matrix(r: np.ndarray) -> tuple[float, float, float]:
     return pitch, yaw, roll
 
 
-def right_handed(pose: np.ndarray) -> np.ndarray:
-    """A 4x4 CARLA pose (Unreal world, rotation columns forward / right / up)
-    in the right-handed frame with y negated, its body x forward / y left / z
-    up (FLU): ``FLIP_Y @ pose @ FLIP_Y``. A proper rotation; the inverse is
-    the same operation."""
-    m = np.asarray(pose, dtype=float)
-    out = np.eye(4)
-    out[:3, :3] = FLIP_Y @ m[:3, :3] @ FLIP_Y
-    out[:3, 3] = FLIP_Y @ m[:3, 3]
-    return out
-
-
-def flu_axes(axes: np.ndarray) -> np.ndarray:
-    """A sensor's axes (columns forward, right, up, in any world frame, e.g.
-    a renderer's after mapping a CARLA pose) as forward, left, up columns."""
-    return np.asarray(axes, dtype=float) @ FLIP_Y
-
-
-def view_matrix_cv(position, axes: np.ndarray) -> np.ndarray:
-    """4x4 world-to-camera (OpenCV: x right, y down, z forward) of a camera at
-    ``position`` whose axes (columns forward, right, up, CARLA's sensor axes)
-    are given in some world frame: CARLA's, or a renderer's own after mapping
-    the pose into it."""
-    r = CV_FROM_SENSOR @ np.asarray(axes, dtype=float).T
-    view = np.eye(4)
-    view[:3, :3] = r
-    view[:3, 3] = -r @ np.asarray(position, dtype=float)
-    return view
-
-
 def quaternion_xyzw(rotation: np.ndarray) -> tuple[float, float, float, float]:
-    """``(x, y, z, w)`` of a proper rotation matrix (right-handed: use
-    :func:`right_handed` first for a CARLA pose), with ``w >= 0``."""
+    """``(x, y, z, w)`` of a proper rotation matrix (a ``right_handed`` pose's;
+    CARLA's rotations are proper too, but quaternions are seldom wanted in a
+    left-handed frame), with ``w >= 0``."""
     r = np.asarray(rotation, dtype=float)
     trace = r[0, 0] + r[1, 1] + r[2, 2]
     if trace > 0:

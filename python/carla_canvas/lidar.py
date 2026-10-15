@@ -83,7 +83,7 @@ class LidarSimulator:
 
         hits = renderer.cast_lidar_rays(LidarView(
             scene, pose, local, channel, vertical, azimuths, s.range, s.semantic,
-            self.sensor_id, self.attributes, ignore_actors))
+            self.sensor_id, self.attributes, ignore_actors, frame=renderer.coordinate_frame))
         world_dirs = local @ pose.rotation_matrix().T
         return self._finish(local, channel, hits, world_dirs, tick_angle)
 
@@ -184,7 +184,8 @@ def cast_rays_from_depth(renderer: Renderer, scene: Scene, pose: Transform, loca
         camera = PinholeCamera(width, height, fov, transform_from_matrix(cam_m))
         frame = renderer.render_camera(CameraView(camera, scene, frozenset(outputs), sensor_id,
                                                   max_depth=max_distance,
-                                                  ignore_actors=ignore_actors))
+                                                  ignore_actors=ignore_actors,
+                                                  frame=renderer.coordinate_frame))
         depth = frame.depth
         col, row = camera.project(d)
         z = depth[row, col]

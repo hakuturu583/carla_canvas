@@ -8,14 +8,14 @@ from carla_canvas.encodings import decode_depth, depth_bgra
 from carla_canvas.geometry import (
     PinholeCamera,
     Transform,
-    flu_axes,
     quaternion_xyzw,
-    right_handed,
     rotation_from_matrix,
     rotation_matrix,
+    to_frame,
     transform_from_matrix,
     view_matrix_cv,
 )
+from carla_canvas.renderer import CameraView, LidarView
 from carla_canvas.ros.bridge import carla_to_ros_transform
 from carla_canvas.scene import ActorInfo, ActorState, Scene
 
@@ -48,29 +48,50 @@ def _quat_matrix(x, y, z, w):
 
 
 @pytest.mark.parametrize("rot", [(0, 0, 0), (10, 30, -5), (-20, 135, 40), (5, -90, 170)])
-def test_right_handed_pose_is_carla_ros_transform(rot):
-    """right_handed() is the frame CARLA's ROS publisher uses (y negated,
+def test_right_handed_frame_is_carla_ros_transform(rot):
+    """The right_handed frame is the one CARLA's ROS publisher uses (y negated,
     TransformFromCarlaRotation), and quaternion_xyzw its quaternion."""
     t = Transform((12.0, -3.5, 1.2), rot)
-    m = t.right_handed_matrix()
+    m = t.matrix("right_handed")
     ros = carla_to_ros_transform(t.location, t.rotation)
     np.testing.assert_allclose(m[:3, 3], (ros.translation.x, ros.translation.y, ros.translation.z))
     q = ros.rotation
     np.testing.assert_allclose(m[:3, :3], _quat_matrix(q.x, q.y, q.z, q.w), atol=1e-9)
     assert np.isclose(np.linalg.det(m[:3, :3]), 1.0)
     np.testing.assert_allclose(_quat_matrix(*quaternion_xyzw(m[:3, :3])), m[:3, :3], atol=1e-9)
-    np.testing.assert_allclose(right_handed(m), t.matrix(), atol=1e-12)  # an involution
-    # FLU axes: the body's left is CARLA's -right
-    np.testing.assert_allclose(flu_axes(t.rotation_matrix())[:, 1], -t.rotation_matrix()[:, 1])
+    np.testing.assert_allclose(to_frame(m, "right_handed"), t.matrix(), atol=1e-12)
+    np.testing.assert_allclose(t.matrix("carla"), t.matrix())
+    with pytest.raises(ValueError):
+        t.matrix("left")
 
 
-def test_view_matrix_cv():
-    t = Transform((1.0, 2.0, 3.0), (0.0, 90.0, 0.0))  # looking along +y
-    view = view_matrix_cv(t.location, t.rotation_matrix())
-    np.testing.assert_allclose(view @ [1.0, 7.0, 3.0, 1.0], [0, 0, 5, 1], atol=1e-12)  # ahead
-    np.testing.assert_allclose(view @ [0.0, 2.0, 3.0, 1.0], [1, 0, 0, 1], atol=1e-12)  # right
-    np.testing.assert_allclose(view @ [1.0, 2.0, 2.0, 1.0], [0, 1, 0, 1], atol=1e-12)  # below
-    np.testing.assert_allclose(PinholeCamera(4, 2, 90.0, t).world_to_camera_cv(), view)
+@pytest.mark.parametrize("frame", ["carla", "right_handed"])
+def test_views_in_the_renderers_frame(frame):
+    t = Transform((1.0, 2.0, 3.0), (0.0, 90.0, 0.0))  # looking along CARLA +y
+    scene = Scene()
+    scene.add_actor(ActorInfo(10, "vehicle.ego"))
+    scene.add_actor(ActorInfo(11, "sensor.camera.rgb", parent_id=10))
+    scene.states[10] = ActorState(Transform((5.0, 1.0, 0.0)))
+    scene.states[11] = ActorState(t)
+    view = CameraView(PinholeCamera(4, 2, 90.0, t), scene, frozenset({"rgb"}), 11, frame=frame)
+    to = (lambda p: p) if frame == "carla" else (lambda p: np.multiply(p, (1, -1, 1)))
+    # the same physical points, given in the renderer's frame, land on the same pixels
+    for carla_point, cv in (((1.0, 7.0, 3.0), (0, 0, 5)), ((0.0, 2.0, 3.0), (1, 0, 0)),
+                            ((1.0, 2.0, 2.0), (0, 1, 0))):
+        np.testing.assert_allclose(view.world_to_camera_cv() @ [*to(carla_point), 1.0],
+                                   [*cv, 1.0], atol=1e-12)
+    np.testing.assert_allclose(view.pose_matrix(), t.matrix(frame))
+    np.testing.assert_allclose(view.parent_matrix()[:3, 3], to((5.0, 1.0, 0.0)))
+    np.testing.assert_allclose(view.actor_matrix(11), t.matrix(frame))
+    lidar = LidarView(scene, t, np.array([[0.0, 1.0, 0.0]]), np.array([0]), np.array([0.0]),
+                      np.array([90.0]), 50.0, sensor_id=11, frame=frame)
+    body = lidar.body_directions()
+    np.testing.assert_allclose(np.degrees(np.arctan2(body[:, 1], body[:, 0])),
+                               lidar.body_azimuths())
+    # the world direction from pose @ body direction is the same physical one
+    np.testing.assert_allclose(lidar.pose_matrix()[:3, :3] @ body[0],
+                               to(t.rotation_matrix() @ [0.0, 1.0, 0.0]), atol=1e-12)
+    assert view_matrix_cv(t.matrix()).shape == (4, 4)
 
 
 def test_parent_transform():

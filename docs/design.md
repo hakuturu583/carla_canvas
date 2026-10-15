@@ -133,10 +133,11 @@ camera matches what the server would render (independent of LibCarla
 version differences in `get_forward_vector` conventions). Cameras are
 pinhole with CARLA's model: horizontal `fov`, square pixels, principal point
 at the center, looking along +x. `PinholeCamera.world_to_camera_cv()` gives
-the OpenCV-convention view matrix most splatting code expects. Renderers in
-a right-handed frame use `right_handed()` / `view_matrix_cv()` / `flu_axes()`
-(docs/renderers.md) rather than flipping axes themselves; the frame conversion
-lives in one place. Depth is
+the OpenCV-convention view matrix most splatting code expects. A renderer
+declares `coordinate_frame = "right_handed"` (y negated: OpenDRIVE, ROS;
+bodies x forward, y left, z up) to get the views' poses, view matrices, ray
+directions and `cast_rays` in that frame instead (docs/renderers.md): the
+protocol stays CARLA's and the conversion is done in one place, here. Depth is
 z-depth (along the camera's x), as CARLA's depth camera.
 
 LiDAR points are in the sensor's frame (x forward, y right, z up), as CARLA

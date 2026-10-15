@@ -9,7 +9,11 @@ gRPC protocol and the ROS 2 topics. A renderer without ray queries still
 gets LiDARs: carla_canvas samples depth images instead.
 
 Coordinates are CARLA's (meters, Unreal's left-handed x forward / y right /
-z up; see :mod:`carla_canvas.geometry`).
+z up; see :mod:`carla_canvas.geometry`) unless the renderer declares another
+:attr:`Renderer.coordinate_frame`: then the views' pose accessors
+(``pose_matrix``, ``world_to_camera_cv``, ``actor_matrix``, ``parent_matrix``,
+``body_directions``, ``body_azimuths``) and :meth:`Renderer.cast_rays` are in
+that frame, converted here, once, for every renderer.
 """
 
 from __future__ import annotations
@@ -22,7 +26,7 @@ from typing import Any
 
 import numpy as np
 
-from .geometry import PinholeCamera, Transform
+from .geometry import PinholeCamera, Transform, check_frame, vectors_to_frame, view_matrix_cv
 from .scene import Scene
 
 
@@ -46,8 +50,25 @@ class WorldInfo:
         return p
 
 
+class _Framed:
+    """Poses of a view in its renderer's coordinate frame (``self.frame``)."""
+
+    scene: Scene
+    sensor_id: int
+    frame: str
+
+    def actor_matrix(self, actor_id: int) -> np.ndarray:
+        """4x4 body-to-world of an actor of this frame's snapshot."""
+        return self.scene.transform(actor_id).matrix(self.frame)
+
+    def parent_matrix(self) -> np.ndarray | None:
+        """4x4 body-to-world of the sensor's parent (its vehicle), or None."""
+        parent = self.scene.parent_transform(self.sensor_id)
+        return parent.matrix(self.frame) if parent is not None else None
+
+
 @dataclass
-class CameraView:
+class CameraView(_Framed):
     camera: PinholeCamera  # its pose is the sensor's world transform
     scene: Scene
     outputs: frozenset[str]  # subset of {"rgb", "depth", "semantic", "instance"}
@@ -56,6 +77,16 @@ class CameraView:
     max_depth: float = 1000.0
     #: actors not to draw (a LiDAR does not see its own vehicle)
     ignore_actors: frozenset[int] = frozenset()
+    #: the renderer's coordinate_frame: what the accessors below return
+    frame: str = "carla"
+
+    def pose_matrix(self) -> np.ndarray:
+        """4x4 camera-to-world (body x forward along the optical axis)."""
+        return self.camera.pose.matrix(self.frame)
+
+    def world_to_camera_cv(self) -> np.ndarray:
+        """4x4 world-to-camera, OpenCV axes (x right, y down, z forward)."""
+        return view_matrix_cv(self.pose_matrix(), self.frame)
 
 
 @dataclass
@@ -82,7 +113,7 @@ class RayHits:
 
 
 @dataclass
-class LidarView:
+class LidarView(_Framed):
     """One LiDAR measurement's rays, laid out as CARLA's ray-cast LiDAR fires
     them (carla_canvas.lidar): what :meth:`Renderer.cast_lidar_rays` answers."""
 
@@ -97,6 +128,21 @@ class LidarView:
     sensor_id: int = 0
     attributes: dict[str, str] = field(default_factory=dict)  # the blueprint's
     ignore_actors: frozenset[int] = frozenset()  # the LiDAR's own vehicle
+    #: the renderer's coordinate_frame: what the accessors below return
+    frame: str = "carla"
+
+    def pose_matrix(self) -> np.ndarray:
+        """4x4 sensor-to-world."""
+        return self.pose.matrix(self.frame)
+
+    def body_directions(self) -> np.ndarray:
+        """(N, 3) ray directions in the sensor's body axes of this frame."""
+        return vectors_to_frame(self.directions, self.frame)
+
+    def body_azimuths(self) -> np.ndarray:
+        """(N,) degrees: atan2(y, x) of :meth:`body_directions` (CARLA's yaw,
+        right positive, in ``carla``; left positive in ``right_handed``)."""
+        return self.azimuths if self.frame == "carla" else -np.asarray(self.azimuths)
 
 
 class Renderer(ABC):
@@ -108,9 +154,15 @@ class Renderer(ABC):
     version = "0"
     #: what render_camera can produce
     camera_outputs: frozenset[str] = frozenset({"rgb"})
+    #: the coordinate frame the renderer works in (carla_canvas.geometry.
+    #: COORDINATE_FRAMES): "carla" (Unreal, left-handed) or "right_handed"
+    #: (y negated: OpenDRIVE / ROS, bodies x forward, y left, z up). The views'
+    #: accessors and cast_rays are converted to it; the Scene stays CARLA's.
+    coordinate_frame = "carla"
 
     def __init__(self, options: dict[str, Any] | None = None) -> None:
         self.options = dict(options or {})
+        check_frame(self.coordinate_frame)
 
     @abstractmethod
     def load_world(self, world: WorldInfo) -> None:
@@ -127,7 +179,8 @@ class Renderer(ABC):
     def cast_rays(self, scene: Scene, origins: np.ndarray, directions: np.ndarray,
                   max_distance: float, ignore_actors: frozenset[int] = frozenset()) -> RayHits:
         """Optional: first hits of N rays (world origins and unit directions,
-        (N, 3)). LiDARs use it when supports_rays is true."""
+        (N, 3), and the hits' normals, in :attr:`coordinate_frame`). LiDARs use
+        it when supports_rays is true."""
         raise NotImplementedError
 
     def cast_lidar_rays(self, view: LidarView) -> RayHits:
@@ -136,9 +189,13 @@ class Renderer(ABC):
         model around it either way. By default: :meth:`cast_rays` when the
         renderer has it, else depth images (carla_canvas.lidar)."""
         if self.supports_rays:
-            world = view.directions @ view.pose.rotation_matrix().T
-            origins = np.broadcast_to(np.asarray(view.pose.location, float), world.shape)
-            return self.cast_rays(view.scene, origins, world, view.max_distance, view.ignore_actors)
+            pose = view.pose_matrix()
+            world = view.body_directions() @ pose[:3, :3].T
+            origins = np.broadcast_to(pose[:3, 3], world.shape)
+            hits = self.cast_rays(view.scene, origins, world, view.max_distance, view.ignore_actors)
+            if hits.normal is not None:  # back to CARLA's frame
+                hits.normal = vectors_to_frame(hits.normal, view.frame)
+            return hits
         if "depth" not in self.camera_outputs:
             raise NotImplementedError(f"renderer '{self.name}' cannot render LiDARs")
         from .lidar import cast_rays_from_depth

@@ -50,19 +50,36 @@ serve(FlatRenderer(), "0.0.0.0:50051")
 | `max_depth` | ignore anything farther |
 | `ignore_actors` | actors not to draw (a LiDAR's own vehicle) |
 
-Poses are CARLA's world transforms, from the tick's snapshot (the sensor's
-own entry: no parent × offset arithmetic in a renderer). `carla_canvas.geometry`
-converts them for renderers in other conventions, so that no backend
-re-derives the handedness flip:
+### Coordinate frame
 
-| helper | |
+A renderer says which frame it works in, and carla_canvas converts for it:
+
+```python
+class MyRenderer(Renderer):
+    coordinate_frame = "right_handed"   # or "carla" (default)
+```
+
+| `coordinate_frame` | world | bodies (sensors, actors) |
+|---|---|---|
+| `carla` | Unreal's, left-handed: x forward, y right, z up | x forward, y right, z up |
+| `right_handed` | the same with y negated: OpenDRIVE's, ROS's (CARLA's ROS publisher's transforms) | x forward, y left, z up (FLU) |
+
+Poses are the CARLA world transforms of the tick's snapshot (a sensor's own
+entry: no parent × mount arithmetic in a renderer). The views give them in
+the renderer's frame:
+
+| accessor | |
 |---|---|
-| `Transform.right_handed_matrix()`, `right_handed(m)` | 4x4 in the right-handed frame with y negated (OpenDRIVE, ROS: CARLA's ROS publisher's transform), body x forward / y left / z up |
-| `view_matrix_cv(position, axes)` | OpenCV world-to-camera of a camera whose forward / right / up axes are given in any world frame (a renderer's own, after mapping the pose) |
-| `flu_axes(axes)` | forward / right / up columns → forward / left / up |
-| `quaternion_xyzw(r)` | of a proper rotation |
-| `FLIP_Y`, `CV_FROM_SENSOR` | the underlying matrices |
-| `Scene.parent_transform(id)` | the world transform of a sensor's vehicle |
+| `view.pose_matrix()` | 4x4 sensor-to-world |
+| `view.world_to_camera_cv()` | 4x4 world-to-camera, OpenCV axes (x right, y down, z forward); `geometry.view_matrix_cv(pose, frame)` for a pose the renderer mapped further (its own scene frame) |
+| `view.actor_matrix(id)`, `view.parent_matrix()` | an actor's / the sensor's vehicle's 4x4 body-to-world |
+| `lidar_view.body_directions()`, `body_azimuths()` | ray directions in the sensor's body axes, and their atan2(y, x) in degrees |
+
+`cast_rays` gets origins and directions in the renderer's frame and returns
+normals in it. `view.scene` (states, `ActorInfo.bounding_box`) and the raw
+fields (`camera.pose`, `directions`, `azimuths`) stay CARLA's;
+`Transform.matrix(frame)` converts any of them. `geometry.quaternion_xyzw`
+gives a rotation's quaternion.
 
 `CameraFrame` (all `(height, width, …)`):
 
