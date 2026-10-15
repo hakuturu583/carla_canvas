@@ -8,6 +8,7 @@ TSC_BACKEND=mock) and the built plugin; skipped otherwise.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -69,7 +70,9 @@ def test_unchanged_program_gets_rendered_sensors(tmp_path, plugin, make_server):
     # ROS 2 through the renderer: the depth camera only (enable_for_ros)
     topics = set(service.ros.transport.messages)
     camera_topics = [t for t in topics if t.endswith("/image")]
-    assert len(camera_topics) == 1 and camera_topics[0].startswith("/carla/depth")
+    # under its vehicle, as CARLA names an unnamed one: vehicle<id>/depth<id>
+    assert len(camera_topics) == 1
+    assert re.fullmatch(r"/carla/vehicle\d+/depth\d+/image", camera_topics[0])
     assert len(service.ros.transport.messages[camera_topics[0]]) == 3
     # the program destroyed its sensors: the plugin told the renderer
     assert service.sensors == {}

@@ -246,8 +246,8 @@ class Plugin {
   void start(tsc_actor_t *actor, uint32_t id) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     auto &sensor = track(actor, id);
+    spawn(sensor);  // a sensor the renderer refuses never becomes due
     sensor.listening = true;
-    spawn(sensor);
   }
 
   void stop(uint32_t id) {

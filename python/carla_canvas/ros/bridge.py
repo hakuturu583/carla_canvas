@@ -5,12 +5,14 @@ difference and no renderer implements any of it.
 
 For a sensor with ROS enabled (``sensor.enable_for_ros()``):
 
-* name: the blueprint's ``ros_name`` attribute, or CARLA's ``<prefix><id>``
-  for the placeholder ``<prefix>__`` (CARLA numbers by stream id, carla_canvas
-  by actor id); prefixes ``rgb``, ``depth``, ``semantic_segmentation``,
-  ``instance_segmentation``, ``ray_cast``, ``ray_cast_semantic``;
-* topic base: ``/carla/[<parent ros_name>/...]<name>`` (parents that have a
-  ``ros_name``); frame_id: the name;
+* name: the blueprint's ``ros_name`` attribute, resolved as CARLA's
+  ActorDispatcher does when it is the blueprint id (its default):
+  ``vehicle<id>`` for vehicles, else ``<prefix><id>`` with the id's last part
+  (CARLA numbers by stream id, carla_canvas by actor id): ``rgb``, ``depth``,
+  ``semantic_segmentation``, ``instance_segmentation``, ``ray_cast``,
+  ``ray_cast_semantic``; ``<prefix>__`` is that placeholder too;
+* topic base: ``/carla/[<parent name>/...]<name>`` (ancestors with a name
+  other than the sensor's, as ROS2::BuildParentChain); frame_id: the name;
 * cameras: ``<base>/image`` (sensor_msgs/Image, ``bgra8``) and
   ``<base>/camera_info`` (plumb_bob, no distortion, fx = fy = width / (2
   tan(fov / 2)), principal point at the center);
@@ -48,23 +50,35 @@ SEMANTIC_LIDAR_FIELDS = [
     m.PointField("object_tag", 20, m.PointField.UINT32)]
 
 
-def explicit_ros_name(actor: ActorInfo | None) -> str:
-    """The actor's ros_name attribute, "" when unset or CARLA's "<prefix>__"
-    placeholder."""
-    name = actor.attributes.get("ros_name", "") if actor is not None else ""
-    return "" if name.endswith("__") else name
+def resolved_ros_name(actor: ActorInfo | None) -> str:
+    """The actor's ROS name as CARLA's UActorDispatcher::RegisterActor resolves
+    the ros_name attribute (default: the blueprint id), "" for none: the id
+    gives "vehicle<id>" for vehicles, else the placeholder "<last part>__",
+    which a sensor's stream fills in ("<last part><id>"; carla_canvas uses the
+    actor id) and other actors keep (no name here)."""
+    if actor is None:
+        return ""
+    name = actor.attributes.get("ros_name", actor.type_id)
+    if name == actor.type_id:
+        if "vehicle" in name:
+            return f"vehicle{actor.id}"
+        name = f"{name.rsplit('.', 1)[-1]}__" if "." in name else ""
+    if name.endswith("__"):
+        return f"{name[:-2]}{actor.id}" if actor.type_id.startswith("sensor.") else ""
+    return name
 
 
 def ros_name(actor: ActorInfo) -> str:
-    """The explicit name, else CARLA's "<prefix><id>" (the prefix is the
-    blueprint's last part: rgb, depth, ray_cast, ...)."""
-    return explicit_ros_name(actor) or f"{actor.type_id.rsplit('.', 1)[-1]}{actor.id}"
+    """A rendered sensor's name (resolved_ros_name, else "<last part><id>")."""
+    return resolved_ros_name(actor) or f"{actor.type_id.rsplit('.', 1)[-1]}{actor.id}"
 
 
 def parent_chain(scene: Scene, actor: ActorInfo) -> str:
-    """"a/b" of the ancestors that have a ROS name (outermost first)."""
-    names = [explicit_ros_name(scene.actors.get(p)) for p in scene.ancestors(actor.id)]
-    return "/".join(reversed([n for n in names if n]))
+    """"a/b" of the ancestors' names (outermost first), skipping those without
+    one or with the sensor's own name (ROS2::BuildParentChain)."""
+    own = ros_name(actor)
+    names = [resolved_ros_name(scene.actors.get(p)) for p in scene.ancestors(actor.id)]
+    return "/".join(reversed([n for n in names if n and n != own]))
 
 
 def carla_to_ros_transform(location, rotation) -> m.TransformMsg:

@@ -56,7 +56,8 @@ sensor:
 * The plugin registers it with the renderer (`SpawnSensor`: the actor with its
   blueprint attributes) and connects first if needed: `GetInfo` on the
   endpoint; if nothing answers and `renderer.command` is set, it starts that
-  command (killed with the program: `PR_SET_PDEATHSIG`) and waits up to
+  command (it stops with the program: `carla-canvas serve` watches
+  `CARLA_CANVAS_PARENT_PID`) and waits up to
   `startup_timeout`. `LoadWorld` sends the map name and the configuration's
   `renderer` section and the map's OpenDRIVE (with its geo-reference, for
   geo-referenced assets) once per episode; a new episode (`load_world`) re-sends

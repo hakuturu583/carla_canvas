@@ -13,8 +13,9 @@ from carla_canvas.lidar import SEMANTIC_DTYPE
 from carla_canvas.renderer import CameraFrame, Renderer
 from carla_canvas.renderers.primitives import PrimitiveRenderer
 from carla_canvas.ros import messages as m
-from carla_canvas.ros.bridge import carla_to_ros_transform, ros_name
-from carla_canvas.scene import ActorInfo, CityObjectLabel
+from carla_canvas.ros.bridge import (carla_to_ros_transform, parent_chain, resolved_ros_name,
+                                     ros_name)
+from carla_canvas.scene import ActorInfo, CityObjectLabel, Scene
 from carla_canvas.server.service import PROTOCOL_VERSION
 from carla_canvas.v1 import renderer_pb2 as pb
 from conftest import actor, snapshot_request
@@ -163,6 +164,17 @@ def test_ros_name_and_transform_conventions():
     assert ros_name(a) == "rgb42"
     assert ros_name(ActorInfo(42, "sensor.camera.rgb", attributes={"ros_name": "rgb__"})) == "rgb42"
     assert ros_name(ActorInfo(1, "sensor.lidar.ray_cast", attributes={"ros_name": "top"})) == "top"
+    # CARLA's default ros_name is the blueprint id (ActorDispatcher resolves it)
+    rgb = ActorInfo(7, "sensor.camera.rgb", parent_id=3,
+                    attributes={"ros_name": "sensor.camera.rgb"})
+    car = ActorInfo(3, "vehicle.tesla.model3", attributes={"ros_name": "vehicle.tesla.model3"})
+    walker = ActorInfo(4, "walker.pedestrian.0001",
+                       attributes={"ros_name": "walker.pedestrian.0001"})
+    assert ros_name(rgb) == "rgb7" and resolved_ros_name(car) == "vehicle3"
+    assert resolved_ros_name(walker) == ""
+    scene = Scene()
+    scene.actors.update({3: car, 7: rgb})
+    assert parent_chain(scene, rgb) == "vehicle3"
     t = carla_to_ros_transform((1, 2, 3), (0, 90, 0))
     assert (t.translation.x, t.translation.y, t.translation.z) == (1, -2, 3)
     # CARLA yaw +90 (clockwise seen from above) is ROS yaw -90
@@ -240,3 +252,40 @@ def test_native_lidar_hook(make_server):
     assert sorted(set(view.channel.tolist())) == [0, 1, 2]
     assert view.attributes["role_name"] == "top" and view.max_distance == 50
     np.testing.assert_allclose(view.directions[:, 2], np.sin(np.radians(view.elevations[view.channel])))
+
+
+def test_renderer_stops_with_the_program_not_its_parent(monkeypatch):
+    """CARLA_CANVAS_PARENT_PID may be the renderer's grandparent (a wrapper
+    command such as `bash -c` or `uv run`): it stops when that pid is gone."""
+    import subprocess
+    import threading
+
+    from carla_canvas.server import _watch_parent
+
+    class Server:
+        stopped = threading.Event()
+
+        def stop(self, grace):
+            self.stopped.set()
+
+    program = subprocess.Popen(["sleep", "30"])
+    monkeypatch.setenv("CARLA_CANVAS_PARENT_PID", str(program.pid))
+    server = Server()
+    _watch_parent(server)
+    assert not server.stopped.wait(1.5)
+    program.kill()
+    program.wait()
+    assert server.stopped.wait(5.0)
+
+
+def test_a_retried_frame_and_a_paused_lidar(make_server):
+    stub, _ = make_server(PrimitiveRenderer())
+    setup_world(stub)
+    first = stub.Render(snapshot_request(7, poses(), new=new_actors(), sensors=[(LIDAR, True)]))
+    # the client retries frame 7 (it failed or timed out on its side)
+    again = stub.Render(snapshot_request(7, poses(), sensors=[(LIDAR, True)]))
+    assert first.measurements[0].lidar.raw_data
+    assert again.measurements[0] == first.measurements[0]
+    # listened again 100 frames later: at most a revolution (8000 pts/s at 10 Hz)
+    later = stub.Render(snapshot_request(107, poses(), sensors=[(LIDAR, True)]))
+    assert sum(later.measurements[0].lidar.points_per_channel) <= 800

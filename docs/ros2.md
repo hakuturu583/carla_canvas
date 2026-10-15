@@ -16,10 +16,13 @@ so no renderer implements DDS and nodes cannot tell the difference.
 | every published sensor | `/tf` | `tf2_msgs/TFMessage`: parent frame → sensor frame |
 | | `/clock` | `rosgraph_msgs/Clock`, once per frame |
 
-* `<base>` = `/carla/` + the ancestors' `ros_name`s (those that have one) +
-  the sensor's name. The name is the blueprint's `ros_name` attribute, or for
-  CARLA's placeholder (`rgb__`, `ray_cast__`, ...) the prefix plus the actor
-  id. The frame id is the name.
+* `<base>` = `/carla/` + the ancestors' names (those that have one, other
+  than the sensor's own) + the sensor's name. A name is the blueprint's
+  `ros_name` attribute, resolved as CARLA does when it is left at its default
+  (the blueprint id): `vehicle<id>` for vehicles, `<last part><id>` for sensors
+  (`rgb7`, `ray_cast9`; CARLA numbers by stream id, carla_canvas by actor id;
+  also for the placeholder `rgb__`), none for other actors. The frame id is
+  the name.
 * Points and transforms are converted to ROS's right-handed frame as CARLA
   does: y negated; rotations with CARLA's `TransformFromCarlaRotation`. The TF
   is relative to the parent with a ROS name, or to `map`.

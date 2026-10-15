@@ -38,6 +38,8 @@ class SensorRuntime:
     camera: CameraSpec | None = None
     lidar: LidarSimulator | None = None
     last_time: float | None = None  # elapsed_seconds of its last measurement
+    #: its last measurement, answered again when the client retries that frame
+    last: pb.SensorData | None = None
 
 
 def merge(base: dict, over: dict) -> dict:
@@ -166,11 +168,18 @@ class RendererService(pb_grpc.RendererServicer):
         response = pb.RenderResponse()
         for r in request.sensors:
             sensor = self._sensor(r.sensor_id)
-            # built in place: a measurement holds a whole image
-            data = response.measurements.add() if r.deliver else pb.SensorData()
-            self.render_sensor(sensor, data)
-            if self.ros is not None and self.ros.is_enabled(sensor.info.id):
-                self.ros.publish(self.scene, sensor.info, data)
+            data = sensor.last
+            if data is None or (data.frame, data.timestamp) != (self.scene.frame,
+                                                                self.scene.elapsed_seconds):
+                # A new frame: a retried one (after a failure or a client
+                # deadline) gets the same measurement, published once.
+                data = pb.SensorData()
+                self.render_sensor(sensor, data)
+                sensor.last = data
+                if self.ros is not None and self.ros.is_enabled(sensor.info.id):
+                    self.ros.publish(self.scene, sensor.info, data)
+            if r.deliver:
+                response.measurements.append(data)
         return response
 
     def render_sensor(self, sensor: SensorRuntime, data: pb.SensorData) -> None:
@@ -189,9 +198,12 @@ class RendererService(pb_grpc.RendererServicer):
             data.image.raw_data = self._encode_camera(spec, frame).tobytes()
         else:
             # The sweep covers the time since the sensor's last measurement (more
-            # than one frame with sensor_tick), as CARLA's LiDAR does.
+            # than one frame with sensor_tick), as CARLA's LiDAR does; at most a
+            # revolution (after a stop(): CARLA's LiDAR kept sweeping meanwhile).
+            revolution = 1.0 / max(sensor.lidar.spec.rotation_frequency, 1e-6)
             dt = scene.delta_seconds if sensor.last_time is None \
-                else scene.elapsed_seconds - sensor.last_time
+                else min(scene.elapsed_seconds - sensor.last_time, max(revolution,
+                                                                       scene.delta_seconds))
             ignore = frozenset([sensor.info.id] + scene.ancestors(sensor.info.id))
             scan = sensor.lidar.scan(self.renderer, scene, pose, dt, ignore)
             target = data.semantic_lidar if sensor.lidar.spec.semantic else data.lidar

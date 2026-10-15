@@ -92,8 +92,17 @@ def _watch_parent(server) -> None:
     if not pid:
         return
 
+    def alive(pid: int) -> bool:  # not getppid(): the command may be a wrapper (bash -c, uv run)
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            pass
+        return True
+
     def watch() -> None:
-        while os.getppid() == int(pid):
+        while alive(int(pid)):
             time.sleep(1.0)
         log.info("the program that started this renderer is gone: stopping")
         server.stop(grace=0)
