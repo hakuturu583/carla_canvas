@@ -45,7 +45,10 @@ ros:
 Common `options`: `lidar_pixels_per_degree` (8): resolution of the depth
 images LiDARs read when the renderer has no ray casts.
 
-### `gaussian_splatting`
+### `gaussian_splatting` (reference)
+
+The built-in reference renderer; splatsim's backend documents its own keys
+(splatsim `docs/carla_canvas.md`).
 
 ```yaml
 renderer:

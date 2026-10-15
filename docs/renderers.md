@@ -93,7 +93,10 @@ rasterizer (learned intensity and ray drop) through `cast_lidar_rays`, its
 scene USDZ and actor bank for assets, placed in CARLA through the map's
 geo-reference. See splatsim's documentation.
 
-## Gaussian splatting
+## Gaussian splatting (reference)
+
+The built-in `gaussian_splatting` backend is the reference and test
+implementation (for real scenes, splatsim above).
 
 `carla_canvas.renderers.gaussian_splatting` composes, per view, the map's
 splats with one copy of an actor asset per matching actor, transformed by the

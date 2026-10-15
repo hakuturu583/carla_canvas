@@ -31,7 +31,7 @@ image = camera.wait_for_data(5.0).as_image()      # rendered by carla_canvas
 ```
 
 ```sh
-CARLA_CANVAS_CONFIG=examples/gaussian_splatting.yaml typesafe-codon run examples/camera_lidar.py
+CARLA_CANVAS_CONFIG=examples/splatsim.yaml typesafe-codon run examples/camera_lidar.py
 ```
 
 ## How it works
@@ -96,15 +96,15 @@ A configuration ([docs/configuration.md](docs/configuration.md)):
 
 ```yaml
 renderer:
-  backend: gaussian_splatting          # primitives | gaussian_splatting | package.module:Class
+  backend: splatsim.carla_canvas:SplatsimRenderer   # or primitives, gaussian_splatting, package.module:Class
   endpoint: "localhost:50051"
   command: [carla-canvas, serve, --config, "{config}"]   # started when nothing answers
   assets:
     maps:
-      "Town10HD*": {scene: splats/town10.ply, transform: {flip_y: true}}
+      "Town10HD*": {scene: scenes/town10.usdz}     # aligned through the map's geo-reference
     actors:
-      "vehicle.*": {asset: splats/sedan.ply, transform: {flip_y: true}}
-  options: {rasterizer: auto, sh_degree: 3}
+      "vehicle.*": sedan                           # the scene bundle's actor asset
+  options: {device: cuda}
 sensors:                               # rendered by carla_canvas; every other sensor stays CARLA's
   - sensor.camera.rgb
   - {type: sensor.lidar.ray_cast, role_name: "top*"}
@@ -116,8 +116,9 @@ ros:
 
 | backend | what it draws | outputs |
 |---|---|---|
-| `gaussian_splatting` | a trained 3DGS map (INRIA `.ply`) plus per-blueprint actor splats placed at the actors' transforms; gsplat on CUDA, or a numpy reference rasterizer | RGB, depth, semantic and instance segmentation; LiDARs from depth |
-| `primitives` | the ground plane and every actor's bounding box, ray traced (no assets) | everything, with exact ray casts |
+| `splatsim.carla_canvas:SplatsimRenderer` | **3D Gaussian Splatting for real use**: [splatsim](https://github.com/hakuturu583/splatsim)'s scene USDZ, actor bank, gsplat cameras and its LiDAR rasterizer (learned intensity, ray drop), geo-referenced to the CARLA map | RGB; LiDARs |
+| `gaussian_splatting` | reference and test implementation: a 3DGS map (INRIA `.ply`) plus per-blueprint actor splats; a numpy EWA rasterizer (or gsplat) | RGB, depth, semantic and instance segmentation; LiDARs from depth |
+| `primitives` | reference renderer: the ground plane and every actor's bounding box, ray traced (no assets) | everything, with exact ray casts |
 | `package.module:Class` | yours: subclass `carla_canvas.Renderer` | what you declare |
 
 Writing one takes two methods ([docs/renderers.md](docs/renderers.md)):
@@ -158,6 +159,6 @@ uv run python tools/gen_proto.py                 # after editing proto/
 |---|---|
 | client plugin (C++, gRPC) | ✅ synchronous and asynchronous rendering, renderer auto-start, `sensor_tick`, episodes (`load_world`) |
 | sensors | ✅ `sensor.camera.rgb`, `.depth`, `.semantic_segmentation`, `.instance_segmentation`, `sensor.lidar.ray_cast`, `.ray_cast_semantic` |
-| renderers | ✅ `primitives`; ✅ `gaussian_splatting` (numpy rasterizer tested; the gsplat path needs a CUDA GPU and is untested in CI) |
+| renderers | ✅ splatsim (hakuturu583/splatsim#9; tested with stand-ins, not yet on a GPU); reference: ✅ `primitives`, ✅ `gaussian_splatting` (numpy rasterizer tested; its gsplat path untested in CI) |
 | ROS 2 | ✅ CycloneDDS (tested) and rclpy transports |
 | verified | typesafe_carla mock backend end to end; the typesafe_carla side also against LibCarla ue5-dev (C ABI tests); not yet against a CARLA server |

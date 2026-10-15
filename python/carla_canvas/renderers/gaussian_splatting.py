@@ -1,4 +1,8 @@
-"""3D Gaussian Splatting in place of CARLA's cameras and LiDARs.
+"""3D Gaussian Splatting in place of CARLA's cameras and LiDARs: the
+reference and test implementation. For real scenes use splatsim's backend
+(``splatsim.carla_canvas:SplatsimRenderer``); this one stays small and
+dependency-free (numpy) so carla_canvas's 3DGS path is tested without a GPU,
+and it shows how a splatting renderer plugs in.
 
 The map is a splat model (a trained 3DGS ``.ply``); vehicles, walkers and
 other actors can have their own splat models, placed at the actors' CARLA

@@ -25,7 +25,7 @@ CARLA API through typesafe_carla, stays as it is. Three constraints shape it:
 | client plugin | `native/src/plugin.cpp` → `libcarla_canvas_plugin.so` | reads the configuration, claims sensors, collects the world state, calls the renderer, queues measurements |
 | protocol | `proto/carla_canvas/v1/renderer.proto` | CARLA-shaped messages and the `Renderer` service (protocol version 2: `LoadWorld` carries the map's OpenDRIVE) |
 | renderer service | `carla_canvas.server` | the protocol over a `Renderer`: scene, sensor models, encodings, LiDAR, ROS |
-| renderers | `carla_canvas.renderers` | `gaussian_splatting`, `primitives`, or a user class |
+| renderers | `carla_canvas.renderers`, splatsim | splatsim (3DGS for real use, in splatsim's repository); reference and test renderers `gaussian_splatting` and `primitives`; or a user class |
 | ROS 2 bridge | `carla_canvas.ros` | CARLA's topics over CycloneDDS or rclpy |
 
 ## 3. Loading

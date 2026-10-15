@@ -38,5 +38,9 @@ libprotobuf-dev protobuf-compiler libyaml-cpp-dev`.
   Renderers never implement DDS.
 - The plugin talks to typesafe_carla only through `get_proc` (`tsc_api.hpp`);
   it must not link against the library. It needs typesafe_carla's C ABI 5.3+.
+- 3D Gaussian splatting for real use is splatsim's backend (its repository
+  depends on carla_canvas). `renderers/gaussian_splatting.py` and
+  `primitives.py` are reference and test renderers: keep them numpy-only and
+  covered by the CPU tests.
 - `ros/dds_types.py` must not use `from __future__ import annotations`
   (cyclonedds resolves field types from the module's globals).

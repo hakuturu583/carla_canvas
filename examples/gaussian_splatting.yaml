@@ -1,4 +1,5 @@
-# 3D Gaussian Splatting for the cameras and LiDARs (other sensors stay CARLA's).
+# The built-in reference Gaussian splatting (INRIA .ply assets). For real scenes
+# use splatsim instead (examples/splatsim.yaml).
 #   CARLA_CANVAS_CONFIG=examples/gaussian_splatting.yaml typesafe-codon run examples/camera_lidar.py
 renderer:
   backend: gaussian_splatting
