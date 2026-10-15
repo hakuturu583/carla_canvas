@@ -75,8 +75,9 @@ the renderer's frame:
 | `view.actor_matrix(id)`, `view.parent_matrix()` | an actor's / the sensor's vehicle's 4x4 body-to-world |
 | `lidar_view.body_directions()`, `body_azimuths()` | ray directions in the sensor's body axes, and their atan2(y, x) in degrees |
 
-`cast_rays` gets origins and directions in the renderer's frame and returns
-normals in it. `view.scene` (states, `ActorInfo.bounding_box`) and the raw
+`cast_rays` gets origins and directions in the renderer's frame, and the
+normals a renderer returns (`cast_rays` or an overridden `cast_lidar_rays`) are
+in it too: carla_canvas converts them back for CARLA's `cos_inc_angle`. `view.scene` (states, `ActorInfo.bounding_box`) and the raw
 fields (`camera.pose`, `directions`, `azimuths`) stay CARLA's;
 `Transform.matrix(frame)` converts any of them. `geometry.quaternion_xyzw`
 gives a rotation's quaternion.

@@ -184,26 +184,28 @@ class Renderer(ABC):
         raise NotImplementedError
 
     def cast_lidar_rays(self, view: LidarView) -> RayHits:
-        """A LiDAR measurement's hits. Override it to render LiDARs natively
-        (e.g. a LiDAR-specific rasterizer); carla_canvas applies CARLA's LiDAR
-        model around it either way. By default: :meth:`cast_rays` when the
-        renderer has it, else depth images (carla_canvas.lidar)."""
+        """A LiDAR measurement's hits (``RayHits.normal`` world, in
+        :attr:`coordinate_frame`, like everything a renderer returns). Override
+        it to render LiDARs natively (e.g. a LiDAR-specific rasterizer);
+        carla_canvas applies CARLA's LiDAR model around it either way. By
+        default: :meth:`cast_rays` when the renderer has it, else depth images
+        (carla_canvas.lidar)."""
         if self.supports_rays:
             pose = view.pose_matrix()
             world = view.body_directions() @ pose[:3, :3].T
             origins = np.broadcast_to(pose[:3, 3], world.shape)
-            hits = self.cast_rays(view.scene, origins, world, view.max_distance, view.ignore_actors)
-            if hits.normal is not None:  # back to CARLA's frame
-                hits.normal = vectors_to_frame(hits.normal, view.frame)
-            return hits
+            return self.cast_rays(view.scene, origins, world, view.max_distance, view.ignore_actors)
         if "depth" not in self.camera_outputs:
             raise NotImplementedError(f"renderer '{self.name}' cannot render LiDARs")
         from .lidar import cast_rays_from_depth
 
-        return cast_rays_from_depth(
+        hits = cast_rays_from_depth(
             self, view.scene, view.pose, view.directions, view.max_distance, view.sensor_id,
             semantic=view.semantic, ignore_actors=view.ignore_actors,
             pixels_per_degree=float(self.options.get("lidar_pixels_per_degree", 8.0)))
+        if hits.normal is not None:  # computed in CARLA's frame
+            hits.normal = vectors_to_frame(hits.normal, view.frame)
+        return hits
 
     @property
     def supports_rays(self) -> bool:

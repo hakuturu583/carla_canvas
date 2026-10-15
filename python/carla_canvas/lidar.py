@@ -22,7 +22,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .geometry import PinholeCamera, Transform, direction, rotation_matrix, transform_from_matrix
+from .geometry import (PinholeCamera, Transform, direction, rotation_matrix, transform_from_matrix,
+                       vectors_to_frame)
 from .renderer import CameraView, LidarView, RayHits, Renderer
 from .scene import Scene
 from .sensors import LidarSpec
@@ -84,6 +85,8 @@ class LidarSimulator:
         hits = renderer.cast_lidar_rays(LidarView(
             scene, pose, local, channel, vertical, azimuths, s.range, s.semantic,
             self.sensor_id, self.attributes, ignore_actors, frame=renderer.coordinate_frame))
+        if hits is not None and hits.normal is not None:  # the renderer's frame -> CARLA's
+            hits.normal = vectors_to_frame(hits.normal, renderer.coordinate_frame)
         world_dirs = local @ pose.rotation_matrix().T
         return self._finish(local, channel, hits, world_dirs, tick_angle)
 
