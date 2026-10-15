@@ -1,0 +1,49 @@
+# One carla-canvas wheel for an architecture, on a runner of that architecture:
+# the sensor plugin with gRPC, protobuf and yaml-cpp built from source and linked
+# in statically (CARLA_CANVAS_FETCH_DEPS), checked as installed. Shared by CI and
+# the release workflow; the dependencies' build is cached between runs.
+name: carla-canvas wheel
+inputs:
+  arch:
+    description: x86_64 or aarch64 (the runner's)
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Restore the dependencies' build
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/wheel-build
+        # Keep the cibuildwheel version in step with `uses:` below.
+        # One entry (~1 GB) per dependency set: cmake/FetchDeps.cmake pins them.
+        key: wheel-manylinux_2_28-${{ inputs.arch }}-cibuildwheel-v3.1.4-${{ hashFiles('cmake/**') }}
+    - uses: pypa/cibuildwheel@v3.1.4
+      env:
+        CIBW_BUILD: cp312-manylinux_${{ inputs.arch }}
+        CIBW_ARCHS: ${{ inputs.arch }}
+        CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
+        CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_28
+        # FetchDeps needs CMake 3.28+: scikit-build-core fetches it if the image's is older.
+        CIBW_ENVIRONMENT: SKBUILD_CMAKE_VERSION=">=3.28"
+        CIBW_CONTAINER_ENGINE: "docker; create_args: --volume=${{ runner.temp }}/wheel-build:/wheel-build"
+        CIBW_CONFIG_SETTINGS: >-
+          build-dir=/wheel-build/build
+          cmake.define.CARLA_CANVAS_FETCH_DEPS=ON
+          cmake.define.CARLA_CANVAS_REQUIRE_PLUGIN=ON
+        # Checked in the next step, as installed outside the source tree.
+        CIBW_TEST_SKIP: "*"
+      with:
+        output-dir: dist
+    # The container wrote the build directory as root; actions/cache saves it
+    # as the runner user.
+    - name: Hand the build back to the runner user
+      shell: bash
+      run: sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/wheel-build"
+    - uses: actions/setup-python@v5
+      with: { python-version: "3.12" }
+    - name: Check the wheel (plugin, exports, no system gRPC/protobuf/yaml-cpp)
+      shell: bash
+      run: |
+        python -m venv /tmp/check
+        /tmp/check/bin/pip install dist/*.whl
+        cd /tmp && /tmp/check/bin/python "$GITHUB_WORKSPACE/tools/check_wheel.py"

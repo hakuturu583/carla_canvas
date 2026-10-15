@@ -39,3 +39,13 @@ jobs:
           ctest --test-dir build --output-on-failure
       - name: Python tests
         run: PATH=$PWD/.venv/bin:$PATH .venv/bin/python -m pytest -v
+
+  wheel:
+    # The release wheel (x86_64): the plugin with gRPC, protobuf and yaml-cpp
+    # built from source, no system packages (.github/actions/wheel).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/wheel
+        with:
+          arch: x86_64

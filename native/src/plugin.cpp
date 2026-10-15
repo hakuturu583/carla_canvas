@@ -35,7 +35,7 @@ extern char **environ;
 #include <thread>
 #include <vector>
 
-namespace pb = carla_canvas::v1;
+namespace rpc = carla_canvas::v1;  // not "pb": protobuf 30+ has a ::pb namespace
 
 namespace carla_canvas {
 namespace {
@@ -50,24 +50,24 @@ void log(const std::string &message) {
 
 // --- Conversions ---------------------------------------------------------------
 
-void to_proto(const tsc_vector3d_t &v, pb::Vector3D *out) {
+void to_proto(const tsc_vector3d_t &v, rpc::Vector3D *out) {
   out->set_x(v.x);
   out->set_y(v.y);
   out->set_z(v.z);
 }
 
-void to_proto(const tsc_rotation_t &r, pb::Rotation *out) {
+void to_proto(const tsc_rotation_t &r, rpc::Rotation *out) {
   out->set_pitch(r.pitch);
   out->set_yaw(r.yaw);
   out->set_roll(r.roll);
 }
 
-void to_proto(const tsc_transform_t &t, pb::Transform *out) {
+void to_proto(const tsc_transform_t &t, rpc::Transform *out) {
   to_proto(t.location, out->mutable_location());
   to_proto(t.rotation, out->mutable_rotation());
 }
 
-tsc_transform_t from_proto(const pb::Transform &t) {
+tsc_transform_t from_proto(const rpc::Transform &t) {
   tsc_transform_t out{};
   out.location = {t.location().x(), t.location().y(), t.location().z()};
   out.rotation = {t.rotation().pitch(), t.rotation().yaw(), t.rotation().roll()};
@@ -95,8 +95,8 @@ std::vector<std::pair<std::string, std::string>> attributes(const Api &api, tsc_
 }
 
 // carla.Actor of a handle (its attributes are the blueprint's).
-pb::Actor actor_info(const Api &api, tsc_actor_t *actor) {
-  pb::Actor info;
+rpc::Actor actor_info(const Api &api, tsc_actor_t *actor) {
+  rpc::Actor info;
   uint32_t id = 0;
   api.check(api.tsc_actor_get_id(actor, &id), "Actor.id");
   info.set_id(id);
@@ -123,7 +123,7 @@ pb::Actor actor_info(const Api &api, tsc_actor_t *actor) {
   return info;
 }
 
-std::string attribute(const pb::Actor &actor, const std::string &id) {
+std::string attribute(const rpc::Actor &actor, const std::string &id) {
   for (const auto &a : actor.attributes()) {
     if (a.id() == id) return a.value();
   }
@@ -205,7 +205,7 @@ class RendererProcess {
 // --- The source -------------------------------------------------------------------
 
 struct SensorState {
-  pb::Actor info;
+  rpc::Actor info;
   double sensor_tick = 0.0;  // seconds between measurements, 0: every frame
   double last_time = -1.0;  // elapsed_seconds of the last measurement
   bool listening = false;  // the program has a stream
@@ -277,9 +277,9 @@ class Plugin {
     const bool spawned = it->second.spawned;
     sensors_.erase(it);
     if (spawned && stub_) {
-      pb::DestroySensorRequest request;
+      rpc::DestroySensorRequest request;
       request.set_sensor_id(id);
-      pb::DestroySensorResponse response;
+      rpc::DestroySensorResponse response;
       try {
         call("DestroySensor", [&](grpc::ClientContext &c) {
           return stub_->DestroySensor(&c, request, &response);
@@ -370,11 +370,11 @@ class Plugin {
     }
   }
 
-  bool get_info(pb::RendererInfo &info, double timeout) {
+  bool get_info(rpc::RendererInfo &info, double timeout) {
     grpc::ClientContext context;
     set_timeout(context, timeout);
     context.set_wait_for_ready(true);
-    return stub_->GetInfo(&context, pb::GetInfoRequest{}, &info).ok();
+    return stub_->GetInfo(&context, rpc::GetInfoRequest{}, &info).ok();
   }
 
   void connect() {
@@ -384,8 +384,8 @@ class Plugin {
     args.SetMaxSendMessageSize(-1);
     auto channel =
         grpc::CreateCustomChannel(config_.endpoint, grpc::InsecureChannelCredentials(), args);
-    stub_ = pb::Renderer::NewStub(channel);
-    pb::RendererInfo info;
+    stub_ = rpc::Renderer::NewStub(channel);
+    rpc::RendererInfo info;
     bool ok = get_info(info, config_.command.empty() ? config_.timeout : 1.0);
     bool started = false;
     // On any failure below: no half-connected stub, no renderer left running
@@ -434,12 +434,12 @@ class Plugin {
     api_.check(api_.tsc_map_get_name(map.get(), &name), "Map.name");
     tsc_string_t opendrive{};
     api_.check(api_.tsc_map_to_opendrive(map.get(), &opendrive), "Map.to_opendrive");
-    pb::LoadWorldRequest request;
+    rpc::LoadWorldRequest request;
     request.set_map_name(take(api_, name));
     request.set_opendrive(take(api_, opendrive));
     request.set_episode_id(episode);
     *request.mutable_renderer_config() = config_.renderer;
-    pb::LoadWorldResponse response;
+    rpc::LoadWorldResponse response;
     call("LoadWorld", [&](grpc::ClientContext &c) { return stub_->LoadWorld(&c, request, &response); },
          std::max(config_.timeout, config_.startup_timeout));
     episode_ = episode;
@@ -450,19 +450,19 @@ class Plugin {
 
   void spawn(SensorState &sensor) {
     if (sensor.spawned) return;
-    pb::SpawnSensorRequest request;
+    rpc::SpawnSensorRequest request;
     *request.mutable_sensor() = sensor.info;
-    pb::SpawnSensorResponse response;
+    rpc::SpawnSensorResponse response;
     call("SpawnSensor", [&](grpc::ClientContext &c) { return stub_->SpawnSensor(&c, request, &response); });
     sensor.spawned = true;
     if (sensor.ros) send_ros_enabled(sensor.info.id(), true);  // again, after a new episode
   }
 
   void send_ros_enabled(uint32_t id, bool enabled) {
-    pb::EnableForRosRequest request;
+    rpc::EnableForRosRequest request;
     request.set_sensor_id(id);
     request.set_enabled(enabled);
-    pb::EnableForRosResponse response;
+    rpc::EnableForRosResponse response;
     call("EnableForRos", [&](grpc::ClientContext &c) {
       return stub_->EnableForRos(&c, request, &response);
     });
@@ -501,7 +501,7 @@ class Plugin {
 
     // Nothing below is committed (frame, sensor times, known actors) until the
     // renderer has answered: a failed frame is sent again, whole.
-    pb::RenderRequest request;
+    rpc::RenderRequest request;
     std::vector<SensorState *> due;
     for (auto &[id, sensor] : sensors_) {
       if ((!sensor.listening && !sensor.ros) || !sensor.seen) continue;
@@ -545,7 +545,7 @@ class Plugin {
       if (present.count(id) == 0) request.add_removed_actors(id);
     }
 
-    pb::RenderResponse response;
+    rpc::RenderResponse response;
     call("Render", [&](grpc::ClientContext &c) { return stub_->Render(&c, request, &response); });
     last_frame_ = ts.frame;
     for (auto *sensor : due) sensor->last_time = ts.elapsed_seconds;
@@ -554,13 +554,13 @@ class Plugin {
     for (const auto &m : response.measurements()) deliver(m);
   }
 
-  void deliver(const pb::SensorData &m) {
+  void deliver(const rpc::SensorData &m) {
     auto it = sensors_.find(m.sensor_id());
     if (it == sensors_.end() || !it->second.listening) return;
     const tsc_transform_t t = from_proto(m.transform());
     Handle<tsc_sensor_data_t> data(api_);
     switch (m.data_case()) {
-      case pb::SensorData::kImage: {
+      case rpc::SensorData::kImage: {
         const auto &image = m.image();
         api_.check(api_.tsc_sensor_data_new_image(
                        m.frame(), m.timestamp(), &t, image.width(), image.height(), image.fov(),
@@ -569,10 +569,10 @@ class Plugin {
                    "renderer image");
         break;
       }
-      case pb::SensorData::kLidar:
+      case rpc::SensorData::kLidar:
         new_lidar(m, m.lidar(), api_.tsc_sensor_data_new_lidar, 4, &t, data);
         break;
-      case pb::SensorData::kSemanticLidar:
+      case rpc::SensorData::kSemanticLidar:
         new_lidar(m, m.semantic_lidar(), api_.tsc_sensor_data_new_semantic_lidar, 1, &t, data);
         break;
       default:
@@ -587,7 +587,7 @@ class Plugin {
   // A (semantic) LiDAR measurement of `lidar` (raw_data: `New`'s point type
   // in groups of `per_point`, read in place: protobuf's buffers are aligned).
   template <typename Message, typename Point>
-  void new_lidar(const pb::SensorData &m, const Message &lidar,
+  void new_lidar(const rpc::SensorData &m, const Message &lidar,
                  tsc_status_t (*New)(uint64_t, double, const tsc_transform_t *, float,
                                      const uint32_t *, uint32_t, const Point *, size_t,
                                      tsc_sensor_data_t **),
@@ -640,7 +640,7 @@ class Plugin {
   uint64_t last_frame_ = 0;
   Handle<tsc_world_t> next_world_{api_};  // handed to the worker
   std::optional<uint64_t> worker_episode_;  // of the last World handed over
-  std::unique_ptr<pb::Renderer::Stub> stub_;
+  std::unique_ptr<rpc::Renderer::Stub> stub_;
   RendererProcess process_;
   std::thread worker_;
   std::atomic<bool> stopping_{false};
