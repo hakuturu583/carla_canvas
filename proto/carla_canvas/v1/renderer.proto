@@ -152,7 +152,7 @@ message GetInfoRequest {}
 message RendererInfo {
   string name = 1;  // e.g. "gaussian_splatting"
   string version = 2;
-  uint32 protocol_version = 3;  // 1
+  uint32 protocol_version = 3;  // 2
   repeated string sensor_types = 4;  // blueprint ids, e.g. "sensor.camera.rgb"
 }
 
@@ -160,6 +160,10 @@ message LoadWorldRequest {
   string map_name = 1;  // carla.Map.name, e.g. "Carla/Maps/Town10HD_Opt"
   uint64 episode_id = 2;
   google.protobuf.Struct renderer_config = 3;  // the configuration's `renderer` section
+  // carla.Map.to_opendrive(): the road network and its geo-reference
+  // (<geoReference>), which map-aligned assets (e.g. geo-referenced splat tiles)
+  // need to place CARLA's coordinates. Protocol 2.
+  string opendrive = 4;
 }
 
 message LoadWorldResponse {}

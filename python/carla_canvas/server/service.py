@@ -28,7 +28,7 @@ from ..sensors import CAMERA_TYPES, CameraSpec, LidarSpec
 from ..v1 import renderer_pb2 as pb
 from ..v1 import renderer_pb2_grpc as pb_grpc
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 log = logging.getLogger("carla_canvas")
 
 
@@ -86,12 +86,7 @@ class RendererService(pb_grpc.RendererServicer):
 
     def sensor_types(self) -> list[str]:
         outputs = self.renderer.camera_outputs
-        types = [t for t, kind in CAMERA_TYPES.items() if kind in outputs]
-        if "depth" in outputs or self.renderer.supports_rays:
-            types.append("sensor.lidar.ray_cast")
-            if self.renderer.supports_rays or "semantic" in outputs:
-                types.append("sensor.lidar.ray_cast_semantic")
-        return types
+        return [t for t, kind in CAMERA_TYPES.items() if kind in outputs] + self.renderer.lidar_types
 
     # --- RPCs ---------------------------------------------------------------------
 
@@ -110,7 +105,8 @@ class RendererService(pb_grpc.RendererServicer):
         config = merge(self.config.renderer, sent)
         self.renderer.options = merge(self.renderer.options, config.get("options") or {})
         base = self.config.path.parent if self.config.path else None
-        self.renderer.load_world(WorldInfo(request.map_name, request.episode_id, config, base))
+        self.renderer.load_world(WorldInfo(request.map_name, request.episode_id, config, base,
+                                           request.opendrive))
         self.scene.reset(request.map_name, request.episode_id)
         self.sensors.clear()
         self.world_loaded = True
@@ -128,8 +124,7 @@ class RendererService(pb_grpc.RendererServicer):
         if info.type_id in CAMERA_TYPES:
             runtime.camera = CameraSpec.from_actor(info)
         else:
-            ppd = float(self.renderer.options.get("lidar_pixels_per_degree", 8.0))
-            runtime.lidar = LidarSimulator(LidarSpec.from_actor(info), info.id, ppd)
+            runtime.lidar = LidarSimulator(LidarSpec.from_actor(info), info.id, info.attributes)
         self.sensors[info.id] = runtime
         self.scene.add_actor(info)
         log.info("sensor %d: %s", info.id, info.type_id)

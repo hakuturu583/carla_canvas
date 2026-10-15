@@ -39,7 +39,7 @@ namespace pb = carla_canvas::v1;
 namespace carla_canvas {
 namespace {
 
-constexpr uint32_t kProtocolVersion = 1;
+constexpr uint32_t kProtocolVersion = 2;
 
 thread_local std::string tl_error;
 
@@ -377,8 +377,11 @@ class Plugin {
     api_.check(api_.tsc_world_get_map(world, map.out()), "World.get_map");
     tsc_string_t name{};
     api_.check(api_.tsc_map_get_name(map.get(), &name), "Map.name");
+    tsc_string_t opendrive{};
+    api_.check(api_.tsc_map_to_opendrive(map.get(), &opendrive), "Map.to_opendrive");
     pb::LoadWorldRequest request;
     request.set_map_name(take(api_, name));
+    request.set_opendrive(take(api_, opendrive));
     request.set_episode_id(episode);
     *request.mutable_renderer_config() = config_.renderer;
     pb::LoadWorldResponse response;

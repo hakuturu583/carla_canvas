@@ -170,14 +170,16 @@ class RendererInfo(_message.Message):
     def __init__(self, name: _Optional[str] = ..., version: _Optional[str] = ..., protocol_version: _Optional[int] = ..., sensor_types: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class LoadWorldRequest(_message.Message):
-    __slots__ = ("map_name", "episode_id", "renderer_config")
+    __slots__ = ("map_name", "episode_id", "renderer_config", "opendrive")
     MAP_NAME_FIELD_NUMBER: _ClassVar[int]
     EPISODE_ID_FIELD_NUMBER: _ClassVar[int]
     RENDERER_CONFIG_FIELD_NUMBER: _ClassVar[int]
+    OPENDRIVE_FIELD_NUMBER: _ClassVar[int]
     map_name: str
     episode_id: int
     renderer_config: _struct_pb2.Struct
-    def __init__(self, map_name: _Optional[str] = ..., episode_id: _Optional[int] = ..., renderer_config: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ...) -> None: ...
+    opendrive: str
+    def __init__(self, map_name: _Optional[str] = ..., episode_id: _Optional[int] = ..., renderer_config: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., opendrive: _Optional[str] = ...) -> None: ...
 
 class LoadWorldResponse(_message.Message):
     __slots__ = ()

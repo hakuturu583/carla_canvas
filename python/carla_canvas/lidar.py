@@ -9,8 +9,10 @@ the general drop-off, noise along the ray, intensity ``exp(-attenuation *
 distance)`` and the intensity drop-off; the semantic LiDAR reports the
 incidence cosine, the actor id and its CityObjectLabel instead.
 
-Hits come from :meth:`Renderer.cast_rays` when the renderer has it, otherwise
-from depth images (:func:`cast_rays_from_depth`), e.g. for Gaussian splatting.
+Hits come from :meth:`Renderer.cast_lidar_rays`: a renderer's native LiDAR
+(e.g. splatsim's), else :meth:`Renderer.cast_rays`, else depth images
+(:func:`cast_rays_from_depth`). A renderer may return its own intensities
+(``RayHits.intensity``), which replace the atmospheric model.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .geometry import PinholeCamera, Transform, direction, rotation_matrix, transform_from_matrix
-from .renderer import CameraView, RayHits, Renderer
+from .renderer import CameraView, LidarView, RayHits, Renderer
 from .scene import Scene
 from .sensors import LidarSpec
 
@@ -43,12 +45,12 @@ SEMANTIC_DTYPE = np.dtype([("x", "<f4"), ("y", "<f4"), ("z", "<f4"), ("cos_inc_a
 class LidarSimulator:
     """One LiDAR sensor's state (where its sweep is) and model."""
 
-    def __init__(self, spec: LidarSpec, sensor_id: int, depth_pixels_per_degree: float = 8.0):
+    def __init__(self, spec: LidarSpec, sensor_id: int, attributes: dict[str, str] | None = None):
         self.spec = spec
         self.sensor_id = sensor_id
+        self.attributes = dict(attributes or {})
         self.current_angle = 0.0  # degrees
         self.rng = np.random.default_rng(spec.noise_seed or sensor_id)
-        self.depth_pixels_per_degree = depth_pixels_per_degree
 
     def laser_angles(self) -> np.ndarray:
         s = self.spec
@@ -70,20 +72,17 @@ class LidarSimulator:
         vertical = self.laser_angles()
         vv, hh = np.meshgrid(vertical, horizontal, indexing="ij")  # (channels, points)
         channel = np.repeat(np.arange(s.channels), points_per_laser)
-        local = direction(vv.ravel(), hh.ravel())  # sensor frame
+        azimuths = hh.ravel()
+        local = direction(vv.ravel(), azimuths)  # sensor frame
         keep = np.ones(len(local), bool)
         if not s.semantic and s.dropoff_general_rate > 0:
             keep = self.rng.uniform(size=len(local)) > s.dropoff_general_rate
-        local, channel = local[keep], channel[keep]
+        local, channel, azimuths = local[keep], channel[keep], azimuths[keep]
 
+        hits = renderer.cast_lidar_rays(LidarView(
+            scene, pose, local, channel, vertical, azimuths, s.range, s.semantic,
+            self.sensor_id, self.attributes, ignore_actors))
         world_dirs = local @ pose.rotation_matrix().T
-        origins = np.broadcast_to(np.asarray(pose.location, float), world_dirs.shape)
-        if renderer.supports_rays:
-            hits = renderer.cast_rays(scene, origins, world_dirs, s.range, ignore_actors)
-        else:
-            hits = cast_rays_from_depth(renderer, scene, pose, local, s.range, self.sensor_id,
-                                        semantic=s.semantic, ignore_actors=ignore_actors,
-                                        pixels_per_degree=self.depth_pixels_per_degree)
         return self._finish(local, channel, hits, world_dirs, tick_angle)
 
     def _finish(self, local, channel, hits: RayHits | None, world_dirs, tick_angle):
@@ -107,7 +106,10 @@ class LidarSimulator:
             tag = (hits.semantic[valid] if hits.semantic is not None else np.zeros(n)).astype(np.uint32)
             pts = np.concatenate([xyz, cos_inc[:, None]], axis=1).astype(np.float32)
             return self._pack(angle, s.channels, channel, pts, np.stack([idx, tag], axis=1))
-        intensity = np.exp(-s.atmosphere_attenuation_rate * distance)
+        if hits.intensity is not None:  # the renderer's own (e.g. learned)
+            intensity = np.clip(np.asarray(hits.intensity, float)[valid], 0.0, 1.0)
+        else:
+            intensity = np.exp(-s.atmosphere_attenuation_rate * distance)
         if s.dropoff_intensity_limit > 0:
             beta = 1.0 - s.dropoff_zero_intensity
             alpha = s.dropoff_zero_intensity / s.dropoff_intensity_limit

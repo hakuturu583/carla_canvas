@@ -15,6 +15,7 @@ from .geometry import Transform  # noqa: E402
 from .renderer import (  # noqa: E402
     CameraFrame,
     CameraView,
+    LidarView,
     RayHits,
     Renderer,
     WorldInfo,
@@ -26,6 +27,7 @@ __all__ = [
     "CameraFrame",
     "CameraView",
     "CanvasConfig",
+    "LidarView",
     "RayHits",
     "Renderer",
     "Scene",

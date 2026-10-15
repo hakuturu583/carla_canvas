@@ -60,15 +60,38 @@ serve(FlatRenderer(), "0.0.0.0:50051")
 | `actor_id` | uint32 (H, W), 0: none | instance segmentation, semantic LiDAR |
 
 The sensor types the service accepts follow from `camera_outputs`: `rgb` →
-`sensor.camera.rgb`; `depth` → `sensor.camera.depth` and
-`sensor.lidar.ray_cast`; `semantic` → segmentation camera (and the semantic
-LiDAR with `depth`); `instance` → instance segmentation.
+`sensor.camera.rgb`; `depth` → `sensor.camera.depth` (and LiDARs, from depth
+images); `semantic` → segmentation camera (and the semantic LiDAR with
+`depth`); `instance` → instance segmentation.
 
-## Ray casts (optional)
+## LiDARs (optional)
 
-A renderer that can intersect rays exactly overrides `cast_rays(scene,
-origins, directions, max_distance, ignore_actors) -> RayHits` (distance,
-normal, semantic, actor_id). LiDARs then use it instead of depth images.
+carla_canvas fires the rays as CARLA's LiDAR does and hands them to
+`cast_lidar_rays(view: LidarView) -> RayHits`:
+
+| `LidarView` | |
+|---|---|
+| `pose` | the sensor's world `Transform` |
+| `directions` | (N, 3) unit, sensor frame (x forward, y right, z up) |
+| `channel`, `elevations`, `azimuths` | each ray's laser index, the lasers' pitches (descending), each ray's yaw (degrees, right positive) |
+| `max_distance`, `semantic`, `attributes`, `ignore_actors` | range, semantic LiDAR, blueprint attributes, the LiDAR's own vehicle |
+
+`RayHits`: `distance` (inf: none) and optionally `intensity` ([0, 1]: replaces
+CARLA's `exp(-attenuation · d)`), `normal`, `semantic`, `actor_id`. Override
+it for a native LiDAR (set `semantic_lidar = True` if it fills the semantic
+fields); carla_canvas still applies CARLA's drop-off, noise and layout.
+Without an override it uses `cast_rays(scene, origins, directions,
+max_distance, ignore_actors)` when the renderer has exact ray casts, else
+depth images (`renderer.options.lidar_pixels_per_degree`).
+
+## splatsim
+
+[splatsim](https://github.com/hakuturu583/splatsim) plugs in as a backend
+(`renderer.backend: splatsim.carla_canvas:SplatsimRenderer`, its
+`carla_canvas` extra): its gsplat renderer for cameras, its LiDAR panorama
+rasterizer (learned intensity and ray drop) through `cast_lidar_rays`, its
+scene USDZ and actor bank for assets, placed in CARLA through the map's
+geo-reference. See splatsim's documentation.
 
 ## Gaussian splatting
 

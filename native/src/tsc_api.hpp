@@ -25,6 +25,7 @@ namespace carla_canvas {
   X(tsc_world_get_id)                 \
   X(tsc_world_get_map)                \
   X(tsc_map_get_name)                 \
+  X(tsc_map_to_opendrive)             \
   X(tsc_world_get_actor)              \
   X(tsc_world_get_snapshot)           \
   X(tsc_world_wait_for_tick)          \

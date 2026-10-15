@@ -15,6 +15,7 @@ from carla_canvas.renderers.primitives import PrimitiveRenderer
 from carla_canvas.ros import messages as m
 from carla_canvas.ros.bridge import carla_to_ros_transform, ros_name
 from carla_canvas.scene import ActorInfo, CityObjectLabel
+from carla_canvas.server.service import PROTOCOL_VERSION
 from carla_canvas.v1 import renderer_pb2 as pb
 from conftest import actor, snapshot_request
 
@@ -48,7 +49,7 @@ def new_actors():
 def test_info_and_errors(make_server):
     stub, _ = make_server(PrimitiveRenderer())
     info = stub.GetInfo(pb.GetInfoRequest())
-    assert info.name == "primitives" and info.protocol_version == 1
+    assert info.name == "primitives" and info.protocol_version == PROTOCOL_VERSION
     assert "sensor.lidar.ray_cast_semantic" in info.sensor_types
     with pytest.raises(grpc.RpcError) as e:
         stub.Render(snapshot_request(1, {}))
@@ -190,3 +191,52 @@ def test_cyclonedds_transport_round_trip():
     assert got and got[0].header.frame_id == "test" and got[0].width == 1
     assert type(got[0]).__name__ == "PointCloud2"
     assert np.frombuffer(bytes(got[0].data), "<f4").tolist() == [1, -2, 3, 0.5]  # y into ROS
+
+
+class _NativeLidar(Renderer):
+    """A renderer with its own LiDAR (as splatsim): fixed range, learned intensity."""
+
+    name = "native_lidar"
+    camera_outputs = frozenset({"rgb"})
+
+    def __init__(self, options=None):
+        super().__init__(options)
+        self.views = []
+
+    def load_world(self, world):
+        self.world = world
+
+    def render_camera(self, view):
+        return CameraFrame(rgb=np.zeros((view.camera.height, view.camera.width, 3), np.uint8))
+
+    def cast_lidar_rays(self, view):
+        from carla_canvas.renderer import RayHits
+
+        self.views.append(view)
+        n = len(view.directions)
+        return RayHits(np.full(n, 7.0), intensity=np.full(n, 0.25))
+
+
+def test_native_lidar_hook(make_server):
+    renderer = _NativeLidar()
+    stub, _ = make_server(renderer)
+    info = stub.GetInfo(pb.GetInfoRequest())
+    # its own LiDAR, no semantic one (semantic_lidar is False)
+    assert set(info.sensor_types) == {"sensor.camera.rgb", "sensor.lidar.ray_cast"}
+    stub.LoadWorld(pb.LoadWorldRequest(map_name="Carla/Maps/X", episode_id=1,
+                                       opendrive="<OpenDRIVE/>"))
+    assert renderer.world.opendrive == "<OpenDRIVE/>"
+    stub.SpawnSensor(pb.SpawnSensorRequest(sensor=actor(
+        LIDAR, "sensor.lidar.ray_cast", channels=3, range=50, points_per_second=600,
+        upper_fov=10, lower_fov=-10, dropoff_general_rate=0, dropoff_intensity_limit=0,
+        role_name="top")))
+    r = stub.Render(snapshot_request(1, {LIDAR: Transform()}, sensors=[(LIDAR, True)]))
+    pts = np.frombuffer(r.measurements[0].lidar.raw_data, "<f4").reshape(-1, 4)
+    assert len(pts) == 30
+    np.testing.assert_allclose(np.linalg.norm(pts[:, :3], axis=1), 7.0, rtol=1e-5)
+    np.testing.assert_allclose(pts[:, 3], 0.25)  # the renderer's intensity, not exp(-a d)
+    view = renderer.views[0]
+    assert view.elevations.tolist() == [10.0, 0.0, -10.0]
+    assert sorted(set(view.channel.tolist())) == [0, 1, 2]
+    assert view.attributes["role_name"] == "top" and view.max_distance == 50
+    np.testing.assert_allclose(view.directions[:, 2], np.sin(np.radians(view.elevations[view.channel])))

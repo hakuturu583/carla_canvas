@@ -23,7 +23,7 @@ CARLA API through typesafe_carla, stays as it is. Three constraints shape it:
 |---|---|---|
 | sensor source C ABI | typesafe_carla (ABI 5.3) | lets a plugin take over sensors' streams and ROS calls; builds LibCarla `Image` / `LidarMeasurement` objects from bytes |
 | client plugin | `native/src/plugin.cpp` → `libcarla_canvas_plugin.so` | reads the configuration, claims sensors, collects the world state, calls the renderer, queues measurements |
-| protocol | `proto/carla_canvas/v1/renderer.proto` | CARLA-shaped messages and the `Renderer` service |
+| protocol | `proto/carla_canvas/v1/renderer.proto` | CARLA-shaped messages and the `Renderer` service (protocol version 2: `LoadWorld` carries the map's OpenDRIVE) |
 | renderer service | `carla_canvas.server` | the protocol over a `Renderer`: scene, sensor models, encodings, LiDAR, ROS |
 | renderers | `carla_canvas.renderers` | `gaussian_splatting`, `primitives`, or a user class |
 | ROS 2 bridge | `carla_canvas.ros` | CARLA's topics over CycloneDDS or rclpy |
@@ -58,7 +58,8 @@ sensor:
   endpoint; if nothing answers and `renderer.command` is set, it starts that
   command (killed with the program: `PR_SET_PDEATHSIG`) and waits up to
   `startup_timeout`. `LoadWorld` sends the map name and the configuration's
-  `renderer` section once per episode; a new episode (`load_world`) re-sends
+  `renderer` section and the map's OpenDRIVE (with its geo-reference, for
+  geo-referenced assets) once per episode; a new episode (`load_world`) re-sends
   everything.
 * `enable_for_ros()` / `disable_for_ros()` / `is_enabled_for_ros()` go to the
   plugin and the renderer (`EnableForRos`), not to the server.
@@ -153,11 +154,15 @@ sends them; the ROS bridge negates y, as CARLA's publisher does.
   id, 0 for the map) and `object_tag` (CityObjectLabel);
 * a LiDAR does not see its own vehicle (the sensor's ancestors are ignored).
 
-Hits come from `Renderer.cast_rays` when the renderer has it, otherwise from
-depth images: up to four virtual pinhole cameras at the sensor (front, right,
-back, left), each ray reading its nearest pixel; normals from the depth
-gradient. This is how a camera-only renderer such as Gaussian splatting gets
-LiDARs.
+Hits come from `Renderer.cast_lidar_rays(LidarView)`: the rays as CARLA
+fires them (directions, laser index, elevations, azimuths, range, blueprint
+attributes). A renderer with its own LiDAR rasterizer overrides it (splatsim
+renders a panorama at exactly the lasers' elevations and samples it) and may
+return its own intensities, which replace the atmospheric model. Otherwise
+`Renderer.cast_rays` answers when the renderer has it, else depth images: up
+to four virtual pinhole cameras at the sensor (front, right, back, left), each
+ray reading its nearest pixel; normals from the depth gradient (semantic
+LiDAR only). This is how a camera-only renderer gets LiDARs.
 
 ## 9. ROS 2
 

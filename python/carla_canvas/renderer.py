@@ -22,7 +22,7 @@ from typing import Any
 
 import numpy as np
 
-from .geometry import PinholeCamera
+from .geometry import PinholeCamera, Transform
 from .scene import Scene
 
 
@@ -32,6 +32,7 @@ class WorldInfo:
     episode_id: int
     config: dict[str, Any]  # the configuration's `renderer` section
     base_dir: Path | None = None  # where relative asset paths start
+    opendrive: str = ""  # carla.Map.to_opendrive(): road network and geo-reference
 
     @property
     def map_basename(self) -> str:
@@ -75,6 +76,27 @@ class RayHits:
     normal: np.ndarray | None = None  # float (N, 3) world, facing the ray
     semantic: np.ndarray | None = None  # uint8 (N,)
     actor_id: np.ndarray | None = None  # uint32 (N,)
+    #: float (N,) in [0, 1]: the renderer's own return intensity (e.g. a learned
+    #: reflectance); replaces CARLA's exp(-attenuation * distance) when given
+    intensity: np.ndarray | None = None
+
+
+@dataclass
+class LidarView:
+    """One LiDAR measurement's rays, laid out as CARLA's ray-cast LiDAR fires
+    them (carla_canvas.lidar): what :meth:`Renderer.cast_lidar_rays` answers."""
+
+    scene: Scene
+    pose: Transform  # the sensor's world transform
+    directions: np.ndarray  # (N, 3) unit, sensor frame (x forward, y right, z up)
+    channel: np.ndarray  # (N,) int: the laser of each ray (0: upper_fov)
+    elevations: np.ndarray  # (channels,) degrees: laser i's pitch, descending
+    azimuths: np.ndarray  # (N,) degrees: each ray's yaw (right positive)
+    max_distance: float
+    semantic: bool = False  # a semantic LiDAR: fill RayHits.semantic / actor_id / normal
+    sensor_id: int = 0
+    attributes: dict[str, str] = field(default_factory=dict)  # the blueprint's
+    ignore_actors: frozenset[int] = frozenset()  # the LiDAR's own vehicle
 
 
 class Renderer(ABC):
@@ -98,15 +120,46 @@ class Renderer(ABC):
     def render_camera(self, view: CameraView) -> CameraFrame:
         """Render the outputs view.outputs asks for (a subset of camera_outputs)."""
 
+    #: whether an overridden cast_lidar_rays fills the semantic LiDAR's fields
+    semantic_lidar = False
+
     def cast_rays(self, scene: Scene, origins: np.ndarray, directions: np.ndarray,
                   max_distance: float, ignore_actors: frozenset[int] = frozenset()) -> RayHits:
         """Optional: first hits of N rays (world origins and unit directions,
         (N, 3)). LiDARs use it when supports_rays is true."""
         raise NotImplementedError
 
+    def cast_lidar_rays(self, view: LidarView) -> RayHits:
+        """A LiDAR measurement's hits. Override it to render LiDARs natively
+        (e.g. a LiDAR-specific rasterizer); carla_canvas applies CARLA's LiDAR
+        model around it either way. By default: :meth:`cast_rays` when the
+        renderer has it, else depth images (carla_canvas.lidar)."""
+        if self.supports_rays:
+            world = view.directions @ view.pose.rotation_matrix().T
+            origins = np.broadcast_to(np.asarray(view.pose.location, float), world.shape)
+            return self.cast_rays(view.scene, origins, world, view.max_distance, view.ignore_actors)
+        if "depth" not in self.camera_outputs:
+            raise NotImplementedError(f"renderer '{self.name}' cannot render LiDARs")
+        from .lidar import cast_rays_from_depth
+
+        return cast_rays_from_depth(
+            self, view.scene, view.pose, view.directions, view.max_distance, view.sensor_id,
+            semantic=view.semantic, ignore_actors=view.ignore_actors,
+            pixels_per_degree=float(self.options.get("lidar_pixels_per_degree", 8.0)))
+
     @property
     def supports_rays(self) -> bool:
         return type(self).cast_rays is not Renderer.cast_rays
+
+    @property
+    def lidar_types(self) -> list[str]:
+        """The LiDAR blueprints this renderer can render."""
+        native = type(self).cast_lidar_rays is not Renderer.cast_lidar_rays
+        if not (native or self.supports_rays or "depth" in self.camera_outputs):
+            return []
+        semantic = self.supports_rays or (self.semantic_lidar if native
+                                          else "semantic" in self.camera_outputs)
+        return ["sensor.lidar.ray_cast"] + (["sensor.lidar.ray_cast_semantic"] if semantic else [])
 
     def close(self) -> None:
         """Release resources (the service is shutting down)."""

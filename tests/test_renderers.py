@@ -156,7 +156,8 @@ def test_gaussian_splatting_renderer_with_map_and_actor_assets(tmp_path):
     # LiDAR through depth images
     spec = LidarSpec(channels=4, range=30.0, points_per_second=2000, upper_fov=0, lower_fov=-20,
                      dropoff_general_rate=0, dropoff_intensity_limit=0)
-    scan = LidarSimulator(spec, 2, depth_pixels_per_degree=2).scan(r, s, Transform((0, 0, 1.5)), 0.05)
+    r.options["lidar_pixels_per_degree"] = 2
+    scan = LidarSimulator(spec, 2).scan(r, s, Transform((0, 0, 1.5)), 0.05)
     assert len(scan.points) > 0
 
 
