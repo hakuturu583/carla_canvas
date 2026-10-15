@@ -23,6 +23,8 @@ runs:
         CIBW_ARCHS: ${{ inputs.arch }}
         CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
         CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_28
+        # FetchDeps needs CMake 3.28+: scikit-build-core fetches it if the image's is older.
+        CIBW_ENVIRONMENT: SKBUILD_CMAKE_VERSION=">=3.28"
         CIBW_CONTAINER_ENGINE: "docker; create_args: --volume=${{ runner.temp }}/wheel-build:/wheel-build"
         CIBW_CONFIG_SETTINGS: >-
           build-dir=/wheel-build/build
