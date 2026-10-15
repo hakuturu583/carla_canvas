@@ -58,19 +58,24 @@ def resolved_ros_name(actor: ActorInfo | None) -> str:
     actor id) and other actors keep (no name here)."""
     if actor is None:
         return ""
+    sensor = actor.type_id.startswith("sensor.")
     name = actor.attributes.get("ros_name", actor.type_id)
     if name == actor.type_id:
         if "vehicle" in name:
             return f"vehicle{actor.id}"
-        name = f"{name.rsplit('.', 1)[-1]}__" if "." in name else ""
+        return _auto_name(actor) if sensor and "." in name else ""
     if name.endswith("__"):
-        return f"{name[:-2]}{actor.id}" if actor.type_id.startswith("sensor.") else ""
+        return f"{name[:-2]}{actor.id}" if sensor else ""
     return name
+
+
+def _auto_name(actor: ActorInfo) -> str:
+    return f"{actor.type_id.rsplit('.', 1)[-1]}{actor.id}"
 
 
 def ros_name(actor: ActorInfo) -> str:
     """A rendered sensor's name (resolved_ros_name, else "<last part><id>")."""
-    return resolved_ros_name(actor) or f"{actor.type_id.rsplit('.', 1)[-1]}{actor.id}"
+    return resolved_ros_name(actor) or _auto_name(actor)
 
 
 def parent_chain(scene: Scene, actor: ActorInfo) -> str:

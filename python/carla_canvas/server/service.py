@@ -37,7 +37,6 @@ class SensorRuntime:
     info: ActorInfo
     camera: CameraSpec | None = None
     lidar: LidarSimulator | None = None
-    last_time: float | None = None  # elapsed_seconds of its last measurement
     #: its last measurement, answered again when the client retries that frame
     last: pb.SensorData | None = None
 
@@ -168,18 +167,20 @@ class RendererService(pb_grpc.RendererServicer):
         response = pb.RenderResponse()
         for r in request.sensors:
             sensor = self._sensor(r.sensor_id)
-            data = sensor.last
-            if data is None or (data.frame, data.timestamp) != (self.scene.frame,
-                                                                self.scene.elapsed_seconds):
-                # A new frame: a retried one (after a failure or a client
-                # deadline) gets the same measurement, published once.
-                data = pb.SensorData()
-                self.render_sensor(sensor, data)
-                sensor.last = data
-                if self.ros is not None and self.ros.is_enabled(sensor.info.id):
-                    self.ros.publish(self.scene, sensor.info, data)
-            if r.deliver:
-                response.measurements.append(data)
+            last = sensor.last
+            if last is not None and (last.frame, last.timestamp) == (self.scene.frame,
+                                                                     self.scene.elapsed_seconds):
+                # a retried frame (after a failure or a client deadline): the
+                # same measurement, published once
+                if r.deliver:
+                    response.measurements.add().CopyFrom(last)
+                continue
+            # built in place: a measurement holds a whole image
+            data = response.measurements.add() if r.deliver else pb.SensorData()
+            self.render_sensor(sensor, data)
+            sensor.last = data
+            if self.ros is not None and self.ros.is_enabled(sensor.info.id):
+                self.ros.publish(self.scene, sensor.info, data)
         return response
 
     def render_sensor(self, sensor: SensorRuntime, data: pb.SensorData) -> None:
@@ -201,16 +202,15 @@ class RendererService(pb_grpc.RendererServicer):
             # than one frame with sensor_tick), as CARLA's LiDAR does; at most a
             # revolution (after a stop(): CARLA's LiDAR kept sweeping meanwhile).
             revolution = 1.0 / max(sensor.lidar.spec.rotation_frequency, 1e-6)
-            dt = scene.delta_seconds if sensor.last_time is None \
-                else min(scene.elapsed_seconds - sensor.last_time, max(revolution,
-                                                                       scene.delta_seconds))
+            dt = scene.delta_seconds if sensor.last is None \
+                else min(scene.elapsed_seconds - sensor.last.timestamp,
+                         max(revolution, scene.delta_seconds))
             ignore = frozenset([sensor.info.id] + scene.ancestors(sensor.info.id))
             scan = sensor.lidar.scan(self.renderer, scene, pose, dt, ignore)
             target = data.semantic_lidar if sensor.lidar.spec.semantic else data.lidar
             target.horizontal_angle = scan.horizontal_angle
             target.points_per_channel.extend(scan.points_per_channel)
             target.raw_data = scan.raw_data
-        sensor.last_time = scene.elapsed_seconds
 
     @staticmethod
     def _encode_camera(spec: CameraSpec, frame) -> np.ndarray:
