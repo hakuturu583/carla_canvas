@@ -1,0 +1,22 @@
+# splatsim renders the cameras and LiDARs (other sensors stay CARLA's); it needs a
+# CUDA GPU and splatsim installed next to carla-canvas (splatsim docs/carla_canvas.md).
+#   CARLA_CANVAS_CONFIG=examples/splatsim.yaml typesafe-codon run examples/camera_lidar.py
+renderer:
+  backend: splatsim.carla_canvas:SplatsimRenderer
+  endpoint: "localhost:50051"
+  command: [carla-canvas, serve, --config, "{config}"]
+  assets:
+    maps:
+      "Town10HD*":
+        scene: scenes/town10.usdz      # a splatsim scene bundle
+        alignment: geo                 # through the map's OpenDRIVE geo-reference
+    actors:
+      "vehicle.*": sedan               # the bundle's actor asset ids
+  options:
+    device: cuda
+    lidar: {drop_threshold: 0.5, alpha_threshold: 0.1}
+sensors:
+  - sensor.camera.rgb
+  - sensor.lidar.ray_cast
+ros:
+  backend: auto

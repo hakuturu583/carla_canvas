@@ -1,0 +1,17 @@
+# Gaussian splatting with synthetic assets (a checkered ground, box "cars"):
+#   python -c "from carla_canvas.renderers.demo_assets import write_demo_assets as w; w('demo_assets')"
+#   CARLA_CANVAS_CONFIG=examples/gaussian_splatting_demo.yaml typesafe-codon run examples/camera_lidar.py
+renderer:
+  backend: gaussian_splatting
+  endpoint: "localhost:50051"
+  command: [carla-canvas, serve, --config, "{config}"]
+  assets:
+    maps:
+      "*": {scene: ../demo_assets/ground.ply}
+    actors:
+      "vehicle.*": {asset: ../demo_assets/car.ply}
+  options:
+    rasterizer: numpy
+    lidar_pixels_per_degree: 2
+ros:
+  backend: none

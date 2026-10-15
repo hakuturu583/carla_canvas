@@ -1,0 +1,28 @@
+# The built-in reference Gaussian splatting (INRIA .ply assets). For real scenes
+# use splatsim instead (examples/splatsim.yaml).
+#   CARLA_CANVAS_CONFIG=examples/gaussian_splatting.yaml typesafe-codon run examples/camera_lidar.py
+renderer:
+  backend: gaussian_splatting
+  endpoint: "localhost:50051"
+  command: [carla-canvas, serve, --config, "{config}"]
+  assets:
+    maps:
+      "Town10HD*":
+        scene: splats/town10/point_cloud.ply     # a trained 3DGS scene, aligned to the map
+        transform: {location: [0, 0, 0], rotation: [0, 0, 0], scale: 1.0, flip_y: true}
+    actors:
+      "vehicle.*":
+        asset: splats/vehicles/sedan.ply          # model frame: x forward, centered, ground at z = 0
+        transform: {flip_y: true}
+      "walker.*":
+        asset: splats/walkers/pedestrian.ply
+  options:
+    rasterizer: auto        # gsplat on a CUDA GPU, else the (slow) numpy reference
+    sh_degree: 3
+    background: [0, 0, 0]
+sensors:   # without this key: every camera and LiDAR type carla_canvas renders
+  - sensor.camera.rgb
+  - sensor.camera.depth
+  - sensor.lidar.ray_cast
+ros:
+  backend: auto             # enable_for_ros() publishes CARLA's topics (rclpy or CycloneDDS)

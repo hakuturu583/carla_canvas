@@ -1,0 +1,7 @@
+/* Only the plugin entry point is exported from libcarla_canvas_plugin.so. */
+{
+  global:
+    tsc_sensor_plugin_init;
+  local:
+    *;
+};
