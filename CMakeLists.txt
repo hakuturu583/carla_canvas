@@ -37,6 +37,8 @@ elseif(CARLA_CANVAS_FETCH_DEPS)
   set(_grpc_cpp_plugin "$<TARGET_FILE:grpc_cpp_plugin>")
   set(_protobuf_lib libprotobuf)
   set(_grpc_lib grpc++)
+  # protobuf's well-known types (google/protobuf/struct.proto)
+  set(_proto_include --proto_path "${grpc_SOURCE_DIR}/third_party/protobuf/src")
 endif()
 if(NOT yaml-cpp_FOUND AND CARLA_CANVAS_FETCH_DEPS)
   carla_canvas_fetch_yaml_cpp()
@@ -110,7 +112,7 @@ add_custom_command(
          "${_gen}/carla_canvas/v1/renderer.grpc.pb.h"
   COMMAND "${CMAKE_COMMAND}" -E make_directory "${_gen}"
   COMMAND ${_protoc}
-          --proto_path "${_proto_dir}"
+          --proto_path "${_proto_dir}" ${_proto_include}
           --cpp_out "${_gen}"
           --grpc_out "${_gen}"
           --plugin=protoc-gen-grpc=${_grpc_cpp_plugin}
