@@ -14,6 +14,7 @@ z up; see :mod:`carla_canvas.geometry`).
 
 from __future__ import annotations
 
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,7 +38,8 @@ class WorldInfo:
         return self.map_name.rsplit("/", 1)[-1]
 
     def resolve(self, path: str) -> Path:
-        p = Path(path).expanduser()
+        """An asset path: ~ and $VARS expanded, relative to the configuration file."""
+        p = Path(os.path.expandvars(os.path.expanduser(str(path))))
         if not p.is_absolute() and self.base_dir is not None:
             p = self.base_dir / p
         return p

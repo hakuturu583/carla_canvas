@@ -30,6 +30,9 @@ class PrimitiveRenderer(Renderer):
 
     def __init__(self, options=None):
         super().__init__(options)
+        self._read_options()
+
+    def _read_options(self) -> None:
         o = self.options
         self.ground_z = o.get("ground_z", 0.0)
         self.sky = np.array(o.get("sky_color", [135, 180, 235]), float)
@@ -38,9 +41,7 @@ class PrimitiveRenderer(Renderer):
         self.light = light / np.linalg.norm(light)
 
     def load_world(self, world: WorldInfo) -> None:
-        options = (world.config or {}).get("options") or {}
-        if "ground_z" in options:
-            self.ground_z = options["ground_z"]
+        self._read_options()  # the service resolved this world's options
 
     # --- ray casting ---------------------------------------------------------------
 
@@ -82,13 +83,13 @@ class PrimitiveRenderer(Renderer):
                 continue
             dist[hit] = tmin[hit]
             # the face entered: the axis whose slab gave tmin
-            face = np.argmax(np.where(np.isfinite(np.minimum(t1, t2)), np.minimum(t1, t2), -np.inf),
-                             axis=1)
-            local_n = np.zeros((n, 3))
             idx = np.nonzero(hit)[0]
-            local_n[idx, face[idx]] = -np.sign(d[idx, face[idx]])
+            near = np.minimum(t1[idx], t2[idx])
+            face = np.argmax(np.where(np.isfinite(near), near, -np.inf), axis=1)
+            local_n = np.zeros((len(idx), 3))
+            local_n[np.arange(len(idx)), face] = -np.sign(d[idx, face])
             box_to_world = transform.rotation_matrix() @ box.rotation_matrix()
-            normal[hit] = local_n[hit] @ box_to_world.T
+            normal[idx] = local_n @ box_to_world.T
             semantic[hit] = info.semantic_tag
             actor[hit] = info.id
 
@@ -122,13 +123,10 @@ class PrimitiveRenderer(Renderer):
         if "depth" in view.outputs:
             # z-depth: the distance along the camera's forward axis
             frame.depth = np.where(hit, hits.distance * local[:, 0], np.inf).astype(np.float32).reshape(h, w)
-        if "semantic" in view.outputs:
-            sem = np.where(hit, hits.semantic, CityObjectLabel.Sky).astype(np.uint8)
-            frame.semantic = sem.reshape(h, w)
+        if view.outputs & {"semantic", "instance"}:
+            frame.semantic = np.where(hit, hits.semantic, CityObjectLabel.Sky).astype(np.uint8).reshape(h, w)
         if "instance" in view.outputs:
             frame.actor_id = hits.actor_id.reshape(h, w)
-            if frame.semantic is None:
-                frame.semantic = np.where(hit, hits.semantic, CityObjectLabel.Sky).astype(np.uint8).reshape(h, w)
         return frame
 
 

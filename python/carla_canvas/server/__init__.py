@@ -8,8 +8,8 @@ or ``carla-canvas serve --config canvas.yaml`` for a configured backend.
 
 from __future__ import annotations
 
-import importlib
 import logging
+import pkgutil
 from concurrent import futures
 
 import grpc
@@ -35,8 +35,7 @@ def load_backend(name: str, options: dict | None = None) -> Renderer:
     if ":" not in target:
         raise ValueError(f"unknown renderer backend {name!r} (built in: "
                          f"{', '.join(BUILTIN_BACKENDS)}; or 'package.module:Class')")
-    module, _, cls = target.partition(":")
-    renderer_cls = getattr(importlib.import_module(module), cls)
+    renderer_cls = pkgutil.resolve_name(target)
     if not (isinstance(renderer_cls, type) and issubclass(renderer_cls, Renderer)):
         raise TypeError(f"{target} is not a carla_canvas.Renderer")
     return renderer_cls(options or {})

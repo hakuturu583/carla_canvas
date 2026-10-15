@@ -13,7 +13,6 @@ namespace carla_canvas {
 
 #define CARLA_CANVAS_TSC_FUNCTIONS(X) \
   X(tsc_last_error_message)           \
-  X(tsc_handle_retain)                \
   X(tsc_handle_release)               \
   X(tsc_string_free)                  \
   X(tsc_string_list_free)             \
@@ -74,16 +73,10 @@ class Handle {
   ~Handle() { reset(); }
   Handle(const Handle &) = delete;
   Handle &operator=(const Handle &) = delete;
-  Handle(Handle &&o) noexcept : api_(o.api_), h_(o.h_) { o.h_ = nullptr; }
   T *get() const { return h_; }
   T **out() {
     reset();
     return &h_;
-  }
-  T *release() {
-    T *h = h_;
-    h_ = nullptr;
-    return h;
   }
   void reset() {
     if (h_ != nullptr) api_->tsc_handle_release(reinterpret_cast<tsc_handle_t *>(h_));

@@ -13,17 +13,6 @@ CAMERA_TYPES = {
     "sensor.camera.semantic_segmentation": "semantic",
     "sensor.camera.instance_segmentation": "instance",
 }
-LIDAR_TYPES = ("sensor.lidar.ray_cast", "sensor.lidar.ray_cast_semantic")
-
-# CARLA's ROS 2 name prefixes (the ros_name placeholder "<prefix>__").
-ROS_PREFIXES = {
-    "sensor.camera.rgb": "rgb",
-    "sensor.camera.depth": "depth",
-    "sensor.camera.semantic_segmentation": "semantic_segmentation",
-    "sensor.camera.instance_segmentation": "instance_segmentation",
-    "sensor.lidar.ray_cast": "ray_cast",
-    "sensor.lidar.ray_cast_semantic": "ray_cast_semantic",
-}
 
 
 def _float(attrs: dict[str, str], key: str, default: float) -> float:
@@ -97,6 +86,3 @@ class LidarSpec:
             raise ValueError(f"LiDAR {actor.id}: bad channels, range or points_per_second")
         return spec
 
-
-def is_supported(type_id: str) -> bool:
-    return type_id in CAMERA_TYPES or type_id in LIDAR_TYPES

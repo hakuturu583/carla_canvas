@@ -32,9 +32,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..geometry import Transform, relative, rotation_from_matrix
+from ..geometry import PinholeCamera, Transform, relative, rotation_from_matrix
+from ..lidar import SEMANTIC_DTYPE
 from ..scene import ActorInfo, Scene
-from ..sensors import CAMERA_TYPES, ROS_PREFIXES
 from . import messages as m
 from .transports import Transport
 
@@ -48,23 +48,23 @@ SEMANTIC_LIDAR_FIELDS = [
     m.PointField("object_tag", 20, m.PointField.UINT32)]
 
 
+def explicit_ros_name(actor: ActorInfo | None) -> str:
+    """The actor's ros_name attribute, "" when unset or CARLA's "<prefix>__"
+    placeholder."""
+    name = actor.attributes.get("ros_name", "") if actor is not None else ""
+    return "" if name.endswith("__") else name
+
+
 def ros_name(actor: ActorInfo) -> str:
-    name = actor.attributes.get("ros_name", "")
-    prefix = ROS_PREFIXES.get(actor.type_id, actor.type_id.rsplit(".", 1)[-1])
-    if not name or name == f"{prefix}__" or name.endswith("__"):
-        return f"{prefix}{actor.id}"
-    return name
+    """The explicit name, else CARLA's "<prefix><id>" (the prefix is the
+    blueprint's last part: rgb, depth, ray_cast, ...)."""
+    return explicit_ros_name(actor) or f"{actor.type_id.rsplit('.', 1)[-1]}{actor.id}"
 
 
 def parent_chain(scene: Scene, actor: ActorInfo) -> str:
     """"a/b" of the ancestors that have a ROS name (outermost first)."""
-    names = []
-    for parent_id in scene.ancestors(actor.id):
-        parent = scene.actors.get(parent_id)
-        name = parent.attributes.get("ros_name", "") if parent else ""
-        if name and not name.endswith("__"):
-            names.append(name)
-    return "/".join(reversed(names))
+    names = [explicit_ros_name(scene.actors.get(p)) for p in scene.ancestors(actor.id)]
+    return "/".join(reversed([n for n in names if n]))
 
 
 def carla_to_ros_transform(location, rotation) -> m.TransformMsg:
@@ -83,22 +83,21 @@ def carla_to_ros_transform(location, rotation) -> m.TransformMsg:
 
 
 def camera_info(header: m.Header, width: int, height: int, fov: float) -> m.CameraInfo:
-    fx = width / (2.0 * math.tan(math.radians(fov) / 2.0))
-    cx, cy = width / 2.0, height / 2.0
+    """The model the image was rendered with (PinholeCamera)."""
+    k = PinholeCamera(width, height, fov).intrinsics()
     return m.CameraInfo(
         header=header, height=height, width=width, distortion_model="plumb_bob",
-        d=[0.0] * 5, k=[fx, 0.0, cx, 0.0, fx, cy, 0.0, 0.0, 1.0],
-        r=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-        p=[fx, 0.0, cx, 0.0, 0.0, fx, cy, 0.0, 0.0, 0.0, 1.0, 0.0],
+        d=[0.0] * 5, k=k.ravel().tolist(), r=np.eye(3).ravel().tolist(),
+        p=np.hstack([k, np.zeros((3, 1))]).ravel().tolist(),
         roi=m.RegionOfInterest(0, 0, height, width, True))
 
 
 def point_cloud(header: m.Header, raw: bytes, semantic: bool) -> m.PointCloud2:
-    step = 24 if semantic else 16
+    step = SEMANTIC_DTYPE.itemsize if semantic else 16
     n = len(raw) // step
     if semantic:
-        rec = np.frombuffer(raw, np.dtype([("xyzc", "<f4", 4), ("ids", "<u4", 2)]), n).copy()
-        rec["xyzc"][:, 1] *= -1.0
+        rec = np.frombuffer(raw, SEMANTIC_DTYPE, n).copy()
+        rec["y"] *= -1.0
         data = rec.tobytes()
     else:
         pts = np.frombuffer(raw, "<f4", n * 4).reshape(n, 4).copy()
@@ -124,7 +123,7 @@ class RosBridge:
         self.transport = transport
         self.publish_tf = publish_tf
         self.publish_clock = publish_clock
-        self._enabled: dict[int, None] = {}
+        self._enabled: set[int] = set()  # names are resolved when publishing
         self._publishers: dict[str, object] = {}
         self._last_clock_frame = -1
         self._lock = threading.Lock()
@@ -132,16 +131,12 @@ class RosBridge:
     def is_enabled(self, sensor_id: int) -> bool:
         return sensor_id in self._enabled
 
-    def set_enabled(self, scene: Scene, sensor: ActorInfo, enabled: bool) -> None:
+    def set_enabled(self, sensor_id: int, enabled: bool) -> None:
         with self._lock:
             if enabled:
-                self._enabled[sensor.id] = None  # names resolved when publishing
+                self._enabled.add(sensor_id)
             else:
-                self._enabled.pop(sensor.id, None)
-
-    def remove(self, sensor_id: int) -> None:
-        with self._lock:
-            self._enabled.pop(sensor_id, None)
+                self._enabled.discard(sensor_id)
 
     @staticmethod
     def names(scene: Scene, sensor: ActorInfo) -> _Published:
@@ -197,6 +192,3 @@ class RosBridge:
     def close(self) -> None:
         self.transport.close()
 
-
-def is_camera(type_id: str) -> bool:
-    return type_id in CAMERA_TYPES

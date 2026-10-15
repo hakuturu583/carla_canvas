@@ -67,14 +67,11 @@ class MemoryTransport(Transport):
 
 
 def _dds_types():
-    """IDL types with ROS 2's DDS type names (carla_canvas.ros.dds_types)."""
-    from . import dds_types as t
+    """IDL types with ROS 2's DDS type names (carla_canvas.ros.dds_types: one
+    class per message class, of the same name)."""
+    from . import dds_types
 
-    return {m.Time: t.Time, m.Header: t.Header, m.Image: t.Image,
-            m.RegionOfInterest: t.RegionOfInterest, m.CameraInfo: t.CameraInfo,
-            m.PointField: t.PointField, m.PointCloud2: t.PointCloud2, m.Vector3: t.Vector3,
-            m.Quaternion: t.Quaternion, m.TransformMsg: t.TransformMsg,
-            m.TransformStamped: t.TransformStamped, m.TFMessage: t.TFMessage, m.Clock: t.Clock}
+    return {cls: getattr(dds_types, cls.__name__) for cls in m.ROS_TYPES}
 
 
 def _convert(value: Any, types: dict) -> Any:
@@ -114,16 +111,20 @@ class CycloneDdsTransport(Transport):
                         Policy.Durability.Volatile, Policy.History.KeepLast(10))
         self._topics: dict[str, Any] = {}
 
-    def publisher(self, topic: str, msg_type: type) -> Publisher:
-        from cyclonedds.pub import DataWriter
+    def _topic(self, topic: str, msg_type: type):
         from cyclonedds.topic import Topic
 
-        dds_type = self._types[msg_type]
         name = dds_topic_name(topic)
         t = self._topics.get(name)
         if t is None:
-            t = self._topics[name] = Topic(self._participant, name, dds_type, qos=self._qos)
-        writer = DataWriter(self._participant, t, qos=self._qos)
+            t = self._topics[name] = Topic(self._participant, name, self._types[msg_type],
+                                           qos=self._qos)
+        return t
+
+    def publisher(self, topic: str, msg_type: type) -> Publisher:
+        from cyclonedds.pub import DataWriter
+
+        writer = DataWriter(self._participant, self._topic(topic, msg_type), qos=self._qos)
         types = self._types
 
         class _Pub(Publisher):
@@ -135,14 +136,8 @@ class CycloneDdsTransport(Transport):
     def subscribe(self, topic: str, msg_type: type):
         """A DataReader of the topic (for tests and tools)."""
         from cyclonedds.sub import DataReader
-        from cyclonedds.topic import Topic
 
-        name = dds_topic_name(topic)
-        t = self._topics.get(name)
-        if t is None:
-            t = self._topics[name] = Topic(self._participant, name, self._types[msg_type],
-                                           qos=self._qos)
-        return DataReader(self._participant, t, qos=self._qos)
+        return DataReader(self._participant, self._topic(topic, msg_type), qos=self._qos)
 
 
 # --- rclpy -------------------------------------------------------------------------------
@@ -166,21 +161,10 @@ class RclpyTransport(Transport):
         for cls, ros_type in m.ROS_TYPES.items():
             pkg, _, name = ros_type.split("/")
             self._classes[cls] = getattr(importlib.import_module(f"{pkg}.msg"), name)
-        self._sub_classes = {
-            m.Time: importlib.import_module("builtin_interfaces.msg").Time,
-            m.Header: importlib.import_module("std_msgs.msg").Header,
-            m.RegionOfInterest: importlib.import_module("sensor_msgs.msg").RegionOfInterest,
-            m.PointField: importlib.import_module("sensor_msgs.msg").PointField,
-            m.Vector3: importlib.import_module("geometry_msgs.msg").Vector3,
-            m.Quaternion: importlib.import_module("geometry_msgs.msg").Quaternion,
-            m.TransformMsg: importlib.import_module("geometry_msgs.msg").Transform,
-            m.TransformStamped: importlib.import_module("geometry_msgs.msg").TransformStamped,
-        }
 
     def _to_ros(self, value: Any) -> Any:
         if dataclasses.is_dataclass(value):
-            cls = self._classes.get(type(value)) or self._sub_classes[type(value)]
-            out = cls()
+            out = self._classes[type(value)]()
             for f in dataclasses.fields(value):
                 setattr(out, f.name, self._to_ros(getattr(value, f.name)))
             return out

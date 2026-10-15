@@ -141,9 +141,10 @@ sends them; the ROS bridge negates y, as CARLA's publisher does.
 
 `carla_canvas.lidar` reproduces RayCastLidar / RayCastSemanticLidar:
 
-* per tick, `points_per_second · Δt / channels` rays per channel, sweeping
-  `rotation_frequency · horizontal_fov · Δt` degrees from where the previous
-  tick stopped; channel i at `upper_fov − i·(upper_fov − lower_fov)/(channels − 1)`;
+* per measurement, `points_per_second · Δt / channels` rays per channel,
+  sweeping `rotation_frequency · horizontal_fov · Δt` degrees from where the
+  previous one stopped, Δt being the time since the sensor's previous
+  measurement (more than a frame with `sensor_tick`); channel i at `upper_fov − i·(upper_fov − lower_fov)/(channels − 1)`;
   the measurement's `horizontal_angle` is where the sweep stopped;
 * ray-cast LiDAR: general drop-off (`dropoff_general_rate`), noise along the
   ray (`noise_stddev`), intensity `exp(−atmosphere_attenuation_rate · d)`,

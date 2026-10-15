@@ -29,7 +29,10 @@ from . import __version__
 from .config import ENV_CONFIG, ConfigError, load_config
 from .plugin import PluginNotFound, plugin_path
 
-ENV_SENSOR_PLUGIN = "TYPESAFE_CARLA_SENSOR_PLUGIN"
+try:
+    from typesafe_carla.paths import ENV_SENSOR_PLUGIN
+except ImportError:  # a renderer host without typesafe_carla (only `serve`)
+    ENV_SENSOR_PLUGIN = "TYPESAFE_CARLA_SENSOR_PLUGIN"
 
 
 def _config_path(arg: str | None) -> str:

@@ -9,6 +9,7 @@ convention a LibCarla version uses for ``Rotation.get_forward_vector``.
 
 from __future__ import annotations
 
+import functools
 import math
 from dataclasses import dataclass, field
 
@@ -69,11 +70,6 @@ def rotation_matrix(pitch: float, yaw: float, roll: float) -> np.ndarray:
     return np.array([forward, right, up], dtype=float).T
 
 
-def compose(parent: Transform, child_local: Transform) -> np.ndarray:
-    """4x4 world matrix of a child given in its parent's frame."""
-    return parent.matrix() @ child_local.matrix()
-
-
 def relative(parent: Transform, child_world: Transform) -> tuple[np.ndarray, np.ndarray]:
     """(translation, 3x3 rotation) of a world transform in the parent's frame."""
     rp = parent.rotation_matrix()
@@ -100,15 +96,23 @@ class PinholeCamera:
         f = self.focal
         return np.array([[f, 0.0, self.width / 2.0], [0.0, f, self.height / 2.0], [0.0, 0.0, 1.0]])
 
+    def pixel_rays(self) -> np.ndarray:
+        """(H, W, 3) directions through pixel centers with x = 1, in the sensor
+        frame (x forward, y right, z up): a z-depth times one is the point."""
+        return _pixel_rays(self.width, self.height, self.focal)
+
     def ray_directions(self) -> np.ndarray:
-        """(H, W, 3) unit directions through pixel centers, in the sensor frame
-        (x forward, y right, z up)."""
-        f = self.focal
-        u = (np.arange(self.width) + 0.5 - self.width / 2.0) / f
-        v = (np.arange(self.height) + 0.5 - self.height / 2.0) / f
-        uu, vv = np.meshgrid(u, v)
-        d = np.stack([np.ones_like(uu), uu, -vv], axis=-1)
+        """pixel_rays(), normalized."""
+        d = self.pixel_rays()
         return d / np.linalg.norm(d, axis=-1, keepdims=True)
+
+    def project(self, directions: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """(column, row) indices of the pixels sensor-frame directions (x > 0)
+        pass through, clipped to the image."""
+        f = self.focal
+        col = np.floor(self.width / 2.0 + f * directions[:, 1] / directions[:, 0]).astype(int)
+        row = np.floor(self.height / 2.0 - f * directions[:, 2] / directions[:, 0]).astype(int)
+        return np.clip(col, 0, self.width - 1), np.clip(row, 0, self.height - 1)
 
     def world_to_camera_cv(self) -> np.ndarray:
         """4x4 world-to-camera matrix in the OpenCV convention (x right, y down,
@@ -118,6 +122,16 @@ class PinholeCamera:
                                  [1.0, 0.0, 0.0, 0.0],   # cv z = sensor x (forward)
                                  [0.0, 0.0, 0.0, 1.0]])
         return sensor_to_cv @ self.pose.inverse_matrix()
+
+
+@functools.lru_cache(maxsize=32)
+def _pixel_rays(width: int, height: int, focal: float) -> np.ndarray:
+    u = (np.arange(width) + 0.5 - width / 2.0) / focal
+    v = (np.arange(height) + 0.5 - height / 2.0) / focal
+    uu, vv = np.meshgrid(u, v)
+    d = np.stack([np.ones_like(uu), uu, -vv], axis=-1)
+    d.flags.writeable = False  # shared by every camera of this size
+    return d
 
 
 def rotation_from_matrix(r: np.ndarray) -> tuple[float, float, float]:

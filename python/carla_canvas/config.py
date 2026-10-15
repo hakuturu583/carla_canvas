@@ -53,12 +53,6 @@ class CanvasConfig:
     sensors: list[SensorRule] = field(default_factory=list)
     ros: RosConfig = field(default_factory=RosConfig)
 
-    def resolve(self, path: str | os.PathLike) -> Path:
-        """A path from the file, relative to the file's directory."""
-        p = Path(os.path.expandvars(os.path.expanduser(str(path))))
-        if not p.is_absolute() and self.path is not None:
-            p = self.path.parent / p
-        return p
 
 
 def _section(data: dict, key: str) -> dict:

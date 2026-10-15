@@ -79,6 +79,20 @@ std::string take(const Api &api, tsc_string_t &s) {
   return value;
 }
 
+// The actor's attributes (as spawned), in LibCarla's order.
+std::vector<std::pair<std::string, std::string>> attributes(const Api &api, tsc_actor_t *actor) {
+  std::vector<std::pair<std::string, std::string>> out;
+  tsc_string_list_t ids{}, values{};
+  if (api.tsc_actor_get_attributes(actor, &ids, &values) != TSC_OK) return out;
+  for (size_t i = 0; i < ids.size && i < values.size; ++i) {
+    out.emplace_back(std::string(ids.items[i].data, ids.items[i].size),
+                     std::string(values.items[i].data, values.items[i].size));
+  }
+  api.tsc_string_list_free(&ids);
+  api.tsc_string_list_free(&values);
+  return out;
+}
+
 // carla.Actor of a handle (its attributes are the blueprint's).
 pb::Actor actor_info(const Api &api, tsc_actor_t *actor) {
   pb::Actor info;
@@ -88,15 +102,10 @@ pb::Actor actor_info(const Api &api, tsc_actor_t *actor) {
   tsc_string_t type_id{};
   api.check(api.tsc_actor_get_type_id(actor, &type_id), "Actor.type_id");
   info.set_type_id(take(api, type_id));
-  tsc_string_list_t ids{}, values{};
-  if (api.tsc_actor_get_attributes(actor, &ids, &values) == TSC_OK) {
-    for (size_t i = 0; i < ids.size && i < values.size; ++i) {
-      auto *a = info.add_attributes();
-      a->set_id(std::string(ids.items[i].data, ids.items[i].size));
-      a->set_value(std::string(values.items[i].data, values.items[i].size));
-    }
-    api.tsc_string_list_free(&ids);
-    api.tsc_string_list_free(&values);
+  for (auto &[id, value] : attributes(api, actor)) {
+    auto *a = info.add_attributes();
+    a->set_id(std::move(id));
+    a->set_value(std::move(value));
   }
   Handle<tsc_actor_t> parent(api);
   if (api.tsc_actor_get_parent(actor, parent.out()) == TSC_OK && parent) {
@@ -200,24 +209,14 @@ class Plugin {
   ~Plugin() {
     stopping_ = true;
     if (worker_.joinable()) worker_.join();
-    if (world_ != nullptr) api_.tsc_handle_release(reinterpret_cast<tsc_handle_t *>(world_));
   }
-
-  const Api &api() const { return api_; }
 
   bool claims(tsc_actor_t *actor, uint32_t id, const std::string &type_id) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (auto it = claims_.find(id); it != claims_.end()) return it->second;
     std::string role_name;
-    tsc_string_list_t ids{}, values{};
-    if (api_.tsc_actor_get_attributes(actor, &ids, &values) == TSC_OK) {
-      for (size_t i = 0; i < ids.size && i < values.size; ++i) {
-        if (std::string(ids.items[i].data, ids.items[i].size) == "role_name") {
-          role_name.assign(values.items[i].data, values.items[i].size);
-        }
-      }
-      api_.tsc_string_list_free(&ids);
-      api_.tsc_string_list_free(&values);
+    for (const auto &[key, value] : attributes(api_, actor)) {
+      if (key == "role_name") role_name = value;
     }
     const bool claimed = claims_sensor(config_, type_id, role_name);
     claims_[id] = claimed;
@@ -240,13 +239,7 @@ class Plugin {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     auto &sensor = track(actor, id);
     spawn(sensor);
-    pb::EnableForRosRequest request;
-    request.set_sensor_id(id);
-    request.set_enabled(enabled);
-    pb::EnableForRosResponse response;
-    call("EnableForRos", [&](grpc::ClientContext &c) {
-      return stub_->EnableForRos(&c, request, &response);
-    });
+    send_ros_enabled(id, enabled);
     sensor.ros = enabled;
   }
 
@@ -303,23 +296,26 @@ class Plugin {
       if (!tick.empty()) state.sensor_tick = std::max(0.0, std::atof(tick.c_str()));
       it = sensors_.emplace(id, std::move(state)).first;
     }
-    if (world_ == nullptr) {
-      api_.check(api_.tsc_actor_get_world(actor, &world_), "Actor.get_world");
+    if (!world_) {
+      api_.check(api_.tsc_actor_get_world(actor, world_.out()), "Actor.get_world");
       if (config_.async_render) worker_ = std::thread([this] { work(); });
     }
     connect();
-    load_world(world_);
+    load_world(world_.get());
     return it->second;
   }
 
   // --- gRPC ---------------------------------------------------------------------
 
+  static void set_timeout(grpc::ClientContext &context, double seconds) {
+    context.set_deadline(std::chrono::system_clock::now() +
+                         std::chrono::milliseconds(static_cast<int64_t>(1000.0 * seconds)));
+  }
+
   template <typename F>
   void call(const char *what, F &&f, double timeout = -1.0) {
     grpc::ClientContext context;
-    context.set_deadline(std::chrono::system_clock::now() +
-                         std::chrono::milliseconds(static_cast<int64_t>(
-                             1000.0 * (timeout > 0 ? timeout : config_.timeout))));
+    set_timeout(context, timeout > 0 ? timeout : config_.timeout);
     const grpc::Status status = f(context);
     if (!status.ok()) {
       throw std::runtime_error(std::string("renderer ") + what + " at " + config_.endpoint +
@@ -330,8 +326,7 @@ class Plugin {
 
   bool get_info(pb::RendererInfo &info, double timeout) {
     grpc::ClientContext context;
-    context.set_deadline(std::chrono::system_clock::now() +
-                         std::chrono::milliseconds(static_cast<int64_t>(1000.0 * timeout)));
+    set_timeout(context, timeout);
     context.set_wait_for_ready(true);
     return stub_->GetInfo(&context, pb::GetInfoRequest{}, &info).ok();
   }
@@ -401,15 +396,17 @@ class Plugin {
     pb::SpawnSensorResponse response;
     call("SpawnSensor", [&](grpc::ClientContext &c) { return stub_->SpawnSensor(&c, request, &response); });
     sensor.spawned = true;
-    if (sensor.ros) {  // again, after a new episode
-      pb::EnableForRosRequest ros;
-      ros.set_sensor_id(sensor.info.id());
-      ros.set_enabled(true);
-      pb::EnableForRosResponse ros_response;
-      call("EnableForRos", [&](grpc::ClientContext &c) {
-        return stub_->EnableForRos(&c, ros, &ros_response);
-      });
-    }
+    if (sensor.ros) send_ros_enabled(sensor.info.id(), true);  // again, after a new episode
+  }
+
+  void send_ros_enabled(uint32_t id, bool enabled) {
+    pb::EnableForRosRequest request;
+    request.set_sensor_id(id);
+    request.set_enabled(enabled);
+    pb::EnableForRosResponse response;
+    call("EnableForRos", [&](grpc::ClientContext &c) {
+      return stub_->EnableForRos(&c, request, &response);
+    });
   }
 
   // --- Rendering ------------------------------------------------------------------
@@ -510,34 +507,12 @@ class Plugin {
                    "renderer image");
         break;
       }
-      case pb::SensorData::kLidar: {
-        const auto &lidar = m.lidar();
-        std::vector<float> points(lidar.raw_data().size() / sizeof(float));
-        std::memcpy(points.data(), lidar.raw_data().data(), points.size() * sizeof(float));
-        const std::vector<uint32_t> counts(lidar.points_per_channel().begin(),
-                                           lidar.points_per_channel().end());
-        api_.check(api_.tsc_sensor_data_new_lidar(
-                       m.frame(), m.timestamp(), &t, lidar.horizontal_angle(), counts.data(),
-                       static_cast<uint32_t>(counts.size()), points.data(), points.size() / 4,
-                       data.out()),
-                   "renderer LiDAR measurement");
+      case pb::SensorData::kLidar:
+        new_lidar(m, m.lidar(), api_.tsc_sensor_data_new_lidar, 4, &t, data);
         break;
-      }
-      case pb::SensorData::kSemanticLidar: {
-        const auto &lidar = m.semantic_lidar();
-        std::vector<tsc_semantic_lidar_detection_t> points(
-            lidar.raw_data().size() / sizeof(tsc_semantic_lidar_detection_t));
-        std::memcpy(points.data(), lidar.raw_data().data(),
-                    points.size() * sizeof(tsc_semantic_lidar_detection_t));
-        const std::vector<uint32_t> counts(lidar.points_per_channel().begin(),
-                                           lidar.points_per_channel().end());
-        api_.check(api_.tsc_sensor_data_new_semantic_lidar(
-                       m.frame(), m.timestamp(), &t, lidar.horizontal_angle(), counts.data(),
-                       static_cast<uint32_t>(counts.size()), points.data(), points.size(),
-                       data.out()),
-                   "renderer semantic LiDAR measurement");
+      case pb::SensorData::kSemanticLidar:
+        new_lidar(m, m.semantic_lidar(), api_.tsc_sensor_data_new_semantic_lidar, 1, &t, data);
         break;
-      }
       default:
         throw std::runtime_error("the renderer returned an empty measurement for sensor " +
                                  std::to_string(m.sensor_id()));
@@ -547,6 +522,23 @@ class Plugin {
     if (delivered == 0) it->second.listening = false;  // its handles are gone
   }
 
+  // A (semantic) LiDAR measurement of `lidar` (raw_data: `New`'s point type
+  // in groups of `per_point`, read in place: protobuf's buffers are aligned).
+  template <typename Message, typename Point>
+  void new_lidar(const pb::SensorData &m, const Message &lidar,
+                 tsc_status_t (*New)(uint64_t, double, const tsc_transform_t *, float,
+                                     const uint32_t *, uint32_t, const Point *, size_t,
+                                     tsc_sensor_data_t **),
+                 size_t per_point, const tsc_transform_t *t, Handle<tsc_sensor_data_t> &out) {
+    const auto &raw = lidar.raw_data();
+    const std::vector<uint32_t> counts(lidar.points_per_channel().begin(),
+                                       lidar.points_per_channel().end());
+    api_.check(New(m.frame(), m.timestamp(), t, lidar.horizontal_angle(), counts.data(),
+                   static_cast<uint32_t>(counts.size()), reinterpret_cast<const Point *>(raw.data()),
+                   raw.size() / sizeof(Point) / per_point, out.out()),
+               "renderer LiDAR measurement");
+  }
+
   // Renders the ticks of an asynchronous simulation (no World.tick() from the
   // program). In synchronous mode it sees the same frames as ticked(), which
   // renders each frame once.
@@ -554,11 +546,11 @@ class Plugin {
     std::string last_error;
     while (!stopping_) {
       Handle<tsc_world_snapshot_t> snapshot(api_);
-      if (api_.tsc_world_wait_for_tick(world_, 0.2, snapshot.out()) != TSC_OK) continue;
+      if (api_.tsc_world_wait_for_tick(world_.get(), 0.2, snapshot.out()) != TSC_OK) continue;
       try {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         if (!active()) continue;
-        render(world_, snapshot.get());
+        render(world_.get(), snapshot.get());
         last_error.clear();
       } catch (const std::exception &e) {
         if (e.what() != last_error) log(e.what());
@@ -575,7 +567,7 @@ class Plugin {
   std::set<uint32_t> known_actors_;
   std::optional<uint64_t> episode_;
   uint64_t last_frame_ = 0;
-  tsc_world_t *world_ = nullptr;  // retained, for the worker
+  Handle<tsc_world_t> world_{api_};  // for the worker
   std::unique_ptr<pb::Renderer::Stub> stub_;
   RendererProcess process_;
   std::thread worker_;

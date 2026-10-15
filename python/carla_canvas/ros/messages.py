@@ -123,11 +123,20 @@ class Clock:  # rosgraph_msgs/Clock
     clock: Time = field(default_factory=Time)
 
 
-# message class -> ROS 2 type name ("package/msg/Name")
+# Every message class (top-level and nested) -> its ROS 2 type ("package/msg/Name").
+# The transports derive their types from this one table.
 ROS_TYPES = {
+    Time: "builtin_interfaces/msg/Time",
+    Header: "std_msgs/msg/Header",
     Image: "sensor_msgs/msg/Image",
+    RegionOfInterest: "sensor_msgs/msg/RegionOfInterest",
     CameraInfo: "sensor_msgs/msg/CameraInfo",
+    PointField: "sensor_msgs/msg/PointField",
     PointCloud2: "sensor_msgs/msg/PointCloud2",
+    Vector3: "geometry_msgs/msg/Vector3",
+    Quaternion: "geometry_msgs/msg/Quaternion",
+    TransformMsg: "geometry_msgs/msg/Transform",
+    TransformStamped: "geometry_msgs/msg/TransformStamped",
     TFMessage: "tf2_msgs/msg/TFMessage",
     Clock: "rosgraph_msgs/msg/Clock",
 }

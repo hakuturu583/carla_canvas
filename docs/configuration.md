@@ -40,7 +40,7 @@ ros:
 | `timeout` | 30 | deadline of every other call |
 | `async` | true | the plugin's thread renders frames from `World.wait_for_tick` too (asynchronous mode) |
 | `assets` | `{}` | passed to the backend (`LoadWorld`) |
-| `options` | `{}` | passed to the backend's constructor and `LoadWorld` |
+| `options` | `{}` | the backend's `Renderer.options`: the service merges them (the client's file over its own) before `load_world` |
 
 Common `options`: `lidar_pixels_per_degree` (8): resolution of the depth
 images LiDARs read when the renderer has no ray casts.

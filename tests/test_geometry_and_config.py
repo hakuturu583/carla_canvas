@@ -77,7 +77,6 @@ ros: {backend: cyclonedds, domain_id: 5}
     assert [(r.type, r.role_name) for r in c.sensors] == [("sensor.camera.rgb", "front"),
                                                           ("sensor.lidar.*", "")]
     assert c.ros.backend == "cyclonedds" and c.ros.domain_id == 5
-    assert c.resolve("town.ply") == tmp_path / "town.ply"
     d = parse_config({})
     assert [r.type for r in d.sensors] == ["sensor.camera.*", "sensor.lidar.*"]
     for bad in ({"sensors": {"type": "x"}}, {"renderer": []}, {"ros": {"backend": "zmq"}},

@@ -68,14 +68,11 @@ def placement_matrix(spec: dict | None) -> np.ndarray:
         if m.shape != (4, 4):
             raise ValueError("transform.matrix must be 4x4")
         return m
-    t = Transform(tuple(spec.get("location", (0.0, 0.0, 0.0))),
-                  tuple(spec.get("rotation", (0.0, 0.0, 0.0))))
-    linear = t.rotation_matrix() * float(spec.get("scale", 1.0))
+    m = Transform(tuple(spec.get("location", (0.0, 0.0, 0.0))),
+                  tuple(spec.get("rotation", (0.0, 0.0, 0.0)))).matrix()
+    m[:3, :3] *= float(spec.get("scale", 1.0))
     if spec.get("flip_y", False):
-        linear = linear @ FLIP_Y
-    m = np.eye(4)
-    m[:3, :3] = linear
-    m[:3, 3] = t.location
+        m[:3, :3] = m[:3, :3] @ FLIP_Y
     return m
 
 
@@ -127,12 +124,13 @@ class GaussianSplattingRenderer(Renderer):
         self.actor_assets: list[tuple[str, GaussianModel, np.ndarray, object]] = []
         self._actor_models: dict[str, GaussianModel] = {}
         self._rasterizer = None
+        self._actor_asset: dict[int, int | None] = {}
+        self._placed: dict[int, tuple[Transform, PlacedModel]] = {}
 
     # --- assets --------------------------------------------------------------------
 
     def load_world(self, world: WorldInfo) -> None:
         config = world.config or {}
-        self.options = {**self.options, **(config.get("options") or {})}
         assets = config.get("assets") or {}
         self.world = None
         maps = assets.get("maps") or {}
@@ -157,6 +155,26 @@ class GaussianSplattingRenderer(Renderer):
             self.actor_assets.append((pattern, model, placement_matrix(spec.get("transform")),
                                       spec.get("semantic_tag")))
         self._rasterizer = None
+        self._actor_asset: dict[int, int | None] = {}  # actor id -> index in actor_assets
+        self._placed: dict[int, tuple[Transform, PlacedModel]] = {}  # this frame's placements
+
+    def _asset_of(self, info) -> int | None:
+        if info.id not in self._actor_asset:
+            self._actor_asset[info.id] = next(
+                (i for i, (pattern, *_) in enumerate(self.actor_assets) if info.matches(pattern)),
+                None)
+        return self._actor_asset[info.id]
+
+    def _place_actor(self, info, transform: Transform) -> PlacedModel:
+        """The actor's model at its transform; every view of a frame shares it."""
+        cached = self._placed.get(info.id)
+        if cached is not None and cached[0] == transform:
+            return cached[1]
+        _, model, local, tag = self.actor_assets[self._asset_of(info)]
+        label = info.semantic_tag if tag in (None, "auto") else int(tag)
+        placed = PlacedModel.place(model, transform.matrix() @ local, label, info.id)
+        self._placed[info.id] = (transform, placed)
+        return placed
 
     def _splats(self, scene: Scene, camera_position: np.ndarray, exclude: set[int]) -> Splats:
         degree = int(self.options.get("sh_degree", 3))
@@ -164,20 +182,21 @@ class GaussianSplattingRenderer(Renderer):
         if self.world is not None:
             parts.append((self.world, self.world.colors(camera_position, degree)))
         if self.actor_assets:
+            for gone in self._placed.keys() - scene.actors.keys():
+                del self._placed[gone]
             for actor_id, info in scene.actors.items():
-                if actor_id in exclude or actor_id not in scene.states or not info.is_visible_body:
+                if actor_id in exclude or actor_id not in scene.states or not info.is_visible_body \
+                        or self._asset_of(info) is None:
                     continue
-                for pattern, model, local, tag in self.actor_assets:
-                    if info.matches(pattern):
-                        label = info.semantic_tag if tag in (None, "auto") else int(tag)
-                        m = scene.transform(actor_id).matrix() @ local
-                        placed = PlacedModel.place(model, m, label, actor_id)
-                        parts.append((placed, placed.colors(camera_position, degree)))
-                        break
+                placed = self._place_actor(info, scene.transform(actor_id))
+                parts.append((placed, placed.colors(camera_position, degree)))
         if not parts:
             z = np.zeros((0, 3))
             return Splats(z, np.zeros((0, 3, 3)), z, np.zeros(0), np.zeros(0, np.uint8),
                           np.zeros(0, np.uint32))
+        if len(parts) == 1:  # no copy of a map-only scene
+            p, colors = parts[0]
+            return Splats(p.means, p.covs, colors, p.model.opacities, p.labels, p.owners)
         return Splats(np.concatenate([p.means for p, _ in parts]),
                       np.concatenate([p.covs for p, _ in parts]),
                       np.concatenate([c for _, c in parts]),
@@ -351,18 +370,17 @@ class GsplatRasterizer:
             frame.rgb = np.clip(image[..., :3] * 255.0 + 0.5, 0, 255).astype(np.uint8)
         if "depth" in outputs:
             frame.depth = np.where(covered, image[..., 3], np.inf).astype(np.float32)
+
+        def dominant(values: np.ndarray) -> np.ndarray:
+            """Per pixel, the value whose Gaussians weigh most (one channel per value)."""
+            classes, inverse = np.unique(values, return_inverse=True)
+            onehot = t(np.eye(len(classes), dtype=np.float32)[inverse])
+            img, _, _ = self.rasterization(means, quats, scales, opac, onehot, **common)
+            return classes[img[0].argmax(-1).cpu().numpy()]
+
         if "semantic" in outputs or "instance" in outputs:
-            # one channel per class: the argmax is the dominant label
-            classes, inverse = np.unique(s.labels, return_inverse=True)
-            onehot = np.eye(len(classes), dtype=np.float32)[inverse]
-            labels_img, _, _ = self.rasterization(means, quats, scales, opac, t(onehot), **common)
-            best = labels_img[0].argmax(-1).cpu().numpy()
-            frame.semantic = np.where(covered, classes[best], CityObjectLabel.Sky).astype(np.uint8)
-            if "instance" in outputs:
-                owners, inverse = np.unique(s.owners, return_inverse=True)
-                onehot = np.eye(len(owners), dtype=np.float32)[inverse]
-                owner_img, _, _ = self.rasterization(means, quats, scales, opac, t(onehot), **common)
-                best = owner_img[0].argmax(-1).cpu().numpy()
-                frame.actor_id = np.where(covered, owners[best], 0).astype(np.uint32)
+            frame.semantic = np.where(covered, dominant(s.labels), CityObjectLabel.Sky).astype(np.uint8)
+        if "instance" in outputs:
+            frame.actor_id = np.where(covered, dominant(s.owners), 0).astype(np.uint32)
         return frame
 

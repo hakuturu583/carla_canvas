@@ -8,9 +8,10 @@ returns the measurements the client listens to.
 
 from __future__ import annotations
 
+import functools
 import logging
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import grpc
 import numpy as np
@@ -36,7 +37,7 @@ class SensorRuntime:
     info: ActorInfo
     camera: CameraSpec | None = None
     lidar: LidarSimulator | None = None
-    renders: int = field(default=0)
+    last_time: float | None = None  # elapsed_seconds of its last measurement
 
 
 def merge(base: dict, over: dict) -> dict:
@@ -53,6 +54,25 @@ class RenderError(Exception):
         self.code = code
 
 
+def _rpc(method):
+    """One call at a time (the scene is shared); errors become gRPC statuses."""
+
+    @functools.wraps(method)
+    def wrapper(self, request, context):
+        with self._lock:
+            try:
+                return method(self, request)
+            except RenderError as e:
+                context.abort(e.code, str(e))
+            except (KeyError, ValueError) as e:
+                context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
+            except Exception as e:  # noqa: BLE001 - reported to the client
+                log.exception("renderer failure")
+                context.abort(grpc.StatusCode.INTERNAL, f"{type(e).__name__}: {e}")
+
+    return wrapper
+
+
 class RendererService(pb_grpc.RendererServicer):
     def __init__(self, renderer: Renderer, config: CanvasConfig | None = None,
                  ros: RosBridge | None = None):
@@ -62,28 +82,11 @@ class RendererService(pb_grpc.RendererServicer):
         self.scene = Scene()
         self.sensors: dict[int, SensorRuntime] = {}
         self.world_loaded = False
-        self._lock = threading.Lock()  # one call at a time: the scene is shared
-
-    # --- helpers ----------------------------------------------------------------
-
-    def _guard(self, context, fn):
-        with self._lock:
-            try:
-                return fn()
-            except RenderError as e:
-                context.abort(e.code, str(e))
-            except (KeyError, ValueError) as e:
-                context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
-            except Exception as e:  # noqa: BLE001 - reported to the client
-                log.exception("renderer failure")
-                context.abort(grpc.StatusCode.INTERNAL, f"{type(e).__name__}: {e}")
+        self._lock = threading.Lock()
 
     def sensor_types(self) -> list[str]:
-        types = []
         outputs = self.renderer.camera_outputs
-        for type_id, kind in CAMERA_TYPES.items():
-            if kind in outputs:
-                types.append(type_id)
+        types = [t for t, kind in CAMERA_TYPES.items() if kind in outputs]
         if "depth" in outputs or self.renderer.supports_rays:
             types.append("sensor.lidar.ray_cast")
             if self.renderer.supports_rays or "semantic" in outputs:
@@ -97,63 +100,61 @@ class RendererService(pb_grpc.RendererServicer):
                                version=f"{self.renderer.version} (carla_canvas {__version__})",
                                protocol_version=PROTOCOL_VERSION, sensor_types=self.sensor_types())
 
-    def LoadWorld(self, request, context):
-        def run():
-            sent = json_format.MessageToDict(request.renderer_config) \
-                if request.HasField("renderer_config") else {}
-            # The service's own configuration, with what the client's file says on top
-            # (usually the same file).
-            config = merge(self.config.renderer, sent)
-            base = self.config.path.parent if self.config.path else None
-            self.renderer.load_world(WorldInfo(request.map_name, request.episode_id, config, base))
-            self.scene.reset(request.map_name, request.episode_id)
-            self.sensors.clear()
-            self.world_loaded = True
-            log.info("world %s (episode %d)", request.map_name, request.episode_id)
-            return pb.LoadWorldResponse()
-        return self._guard(context, run)
+    @_rpc
+    def LoadWorld(self, request):
+        sent = json_format.MessageToDict(request.renderer_config) \
+            if request.HasField("renderer_config") else {}
+        # The service's own configuration, with what the client's file says on top
+        # (usually the same file). Options are resolved here, once: renderers read
+        # self.options.
+        config = merge(self.config.renderer, sent)
+        self.renderer.options = merge(self.renderer.options, config.get("options") or {})
+        base = self.config.path.parent if self.config.path else None
+        self.renderer.load_world(WorldInfo(request.map_name, request.episode_id, config, base))
+        self.scene.reset(request.map_name, request.episode_id)
+        self.sensors.clear()
+        self.world_loaded = True
+        log.info("world %s (episode %d)", request.map_name, request.episode_id)
+        return pb.LoadWorldResponse()
 
-    def SpawnSensor(self, request, context):
-        def run():
-            info = ActorInfo.from_proto(request.sensor)
-            if info.type_id not in self.sensor_types():
-                raise RenderError(grpc.StatusCode.UNIMPLEMENTED,
-                                  f"renderer '{self.renderer.name}' does not render "
-                                  f"{info.type_id} (it renders {', '.join(self.sensor_types())})")
-            runtime = SensorRuntime(info)
-            if info.type_id in CAMERA_TYPES:
-                runtime.camera = CameraSpec.from_actor(info)
-            else:
-                ppd = float(self.renderer.options.get("lidar_pixels_per_degree", 8.0))
-                runtime.lidar = LidarSimulator(LidarSpec.from_actor(info), info.id, ppd)
-            self.sensors[info.id] = runtime
-            self.scene.add_actor(info)
-            log.info("sensor %d: %s", info.id, info.type_id)
-            return pb.SpawnSensorResponse()
-        return self._guard(context, run)
+    @_rpc
+    def SpawnSensor(self, request):
+        info = ActorInfo.from_proto(request.sensor)
+        if info.type_id not in self.sensor_types():
+            raise RenderError(grpc.StatusCode.UNIMPLEMENTED,
+                              f"renderer '{self.renderer.name}' does not render "
+                              f"{info.type_id} (it renders {', '.join(self.sensor_types())})")
+        runtime = SensorRuntime(info)
+        if info.type_id in CAMERA_TYPES:
+            runtime.camera = CameraSpec.from_actor(info)
+        else:
+            ppd = float(self.renderer.options.get("lidar_pixels_per_degree", 8.0))
+            runtime.lidar = LidarSimulator(LidarSpec.from_actor(info), info.id, ppd)
+        self.sensors[info.id] = runtime
+        self.scene.add_actor(info)
+        log.info("sensor %d: %s", info.id, info.type_id)
+        return pb.SpawnSensorResponse()
 
-    def DestroySensor(self, request, context):
-        def run():
-            self.sensors.pop(request.sensor_id, None)
-            if self.ros is not None:
-                self.ros.remove(request.sensor_id)
-            return pb.DestroySensorResponse()
-        return self._guard(context, run)
+    @_rpc
+    def DestroySensor(self, request):
+        self.sensors.pop(request.sensor_id, None)
+        if self.ros is not None:
+            self.ros.set_enabled(request.sensor_id, False)
+        return pb.DestroySensorResponse()
 
-    def EnableForRos(self, request, context):
-        def run():
-            sensor = self._sensor(request.sensor_id)
-            if self.ros is None:
-                if request.enabled:
-                    raise RenderError(grpc.StatusCode.FAILED_PRECONDITION,
-                                      "ROS 2 output is off (ros.backend: none)")
-                return pb.EnableForRosResponse()
-            self.ros.set_enabled(self.scene, sensor.info, request.enabled)
-            return pb.EnableForRosResponse()
-        return self._guard(context, run)
+    @_rpc
+    def EnableForRos(self, request):
+        self._sensor(request.sensor_id)
+        if self.ros is not None:
+            self.ros.set_enabled(request.sensor_id, request.enabled)
+        elif request.enabled:
+            raise RenderError(grpc.StatusCode.FAILED_PRECONDITION,
+                              "ROS 2 output is off (ros.backend: none)")
+        return pb.EnableForRosResponse()
 
-    def Render(self, request, context):
-        return self._guard(context, lambda: self.render(request))
+    @_rpc
+    def Render(self, request):
+        return self.render(request)
 
     # --- rendering -------------------------------------------------------------------
 
@@ -170,19 +171,17 @@ class RendererService(pb_grpc.RendererServicer):
         response = pb.RenderResponse()
         for r in request.sensors:
             sensor = self._sensor(r.sensor_id)
-            data = self.render_sensor(sensor)
-            sensor.renders += 1
+            # built in place: a measurement holds a whole image
+            data = response.measurements.add() if r.deliver else pb.SensorData()
+            self.render_sensor(sensor, data)
             if self.ros is not None and self.ros.is_enabled(sensor.info.id):
                 self.ros.publish(self.scene, sensor.info, data)
-            if r.deliver:
-                response.measurements.append(data)
         return response
 
-    def render_sensor(self, sensor: SensorRuntime) -> pb.SensorData:
+    def render_sensor(self, sensor: SensorRuntime, data: pb.SensorData) -> None:
         scene = self.scene
         pose = scene.transform(sensor.info.id)
-        data = pb.SensorData(sensor_id=sensor.info.id, frame=scene.frame,
-                             timestamp=scene.elapsed_seconds)
+        data.sensor_id, data.frame, data.timestamp = sensor.info.id, scene.frame, scene.elapsed_seconds
         pose.to_proto(data.transform)
         if sensor.camera is not None:
             spec = sensor.camera
@@ -191,17 +190,20 @@ class RendererService(pb_grpc.RendererServicer):
             frame = self.renderer.render_camera(CameraView(
                 PinholeCamera(spec.width, spec.height, spec.fov, pose), scene, frozenset(outputs),
                 sensor.info.id, sensor.info.attributes))
-            pixels = self._encode_camera(spec, frame)
             data.image.width, data.image.height, data.image.fov = spec.width, spec.height, spec.fov
-            data.image.raw_data = pixels.tobytes()
+            data.image.raw_data = self._encode_camera(spec, frame).tobytes()
         else:
+            # The sweep covers the time since the sensor's last measurement (more
+            # than one frame with sensor_tick), as CARLA's LiDAR does.
+            dt = scene.delta_seconds if sensor.last_time is None \
+                else scene.elapsed_seconds - sensor.last_time
             ignore = frozenset([sensor.info.id] + scene.ancestors(sensor.info.id))
-            scan = sensor.lidar.scan(self.renderer, scene, pose, scene.delta_seconds, ignore)
+            scan = sensor.lidar.scan(self.renderer, scene, pose, dt, ignore)
             target = data.semantic_lidar if sensor.lidar.spec.semantic else data.lidar
             target.horizontal_angle = scan.horizontal_angle
             target.points_per_channel.extend(scan.points_per_channel)
             target.raw_data = scan.raw_data
-        return data
+        sensor.last_time = scene.elapsed_seconds
 
     @staticmethod
     def _encode_camera(spec: CameraSpec, frame) -> np.ndarray:

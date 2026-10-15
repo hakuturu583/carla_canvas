@@ -11,7 +11,7 @@ Gaussian (for segmentation cameras and the semantic LiDAR).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +30,7 @@ class GaussianModel:
     opacities: np.ndarray  # (N,) in [0, 1]
     sh: np.ndarray  # (N, K, 3), K = (degree + 1)^2
     labels: np.ndarray | None = None  # (N,) uint8
+    _covariances: np.ndarray | None = field(default=None, init=False, repr=False, compare=False)
 
     def __len__(self) -> int:
         return len(self.means)
@@ -39,10 +40,12 @@ class GaussianModel:
         return int(round(np.sqrt(self.sh.shape[1]))) - 1
 
     def covariances(self) -> np.ndarray:
-        """(N, 3, 3) R S S^T R^T."""
-        r = quat_to_matrix(self.quats)
-        rs = r * self.scales[:, None, :]
-        return rs @ rs.transpose(0, 2, 1)
+        """(N, 3, 3) R S S^T R^T (computed once: placing an actor's model every
+        frame reuses it)."""
+        if self._covariances is None:
+            rs = quat_to_matrix(self.quats) * self.scales[:, None, :]
+            self._covariances = rs @ rs.transpose(0, 2, 1)
+        return self._covariances
 
 
 def quat_to_matrix(q: np.ndarray) -> np.ndarray:

@@ -32,7 +32,6 @@ class LidarScan:
     points_per_channel: list[int]
     raw_data: bytes  # carla.LidarMeasurement / SemanticLidarMeasurement layout
     points: np.ndarray  # (N, 4) float32 x, y, z, intensity (or cos_inc_angle), sensor frame
-    semantic: np.ndarray | None = None  # (N, 2) uint32 object_idx, object_tag
 
 
 MAX_HALF_SIZE = 2048  # pixels, of the depth images LiDARs read
@@ -64,7 +63,7 @@ class LidarSimulator:
         points_per_laser = int(s.points_per_second * max(delta_seconds, 0.0) / s.channels)
         tick_angle = s.rotation_frequency * s.horizontal_fov * max(delta_seconds, 0.0)
         if points_per_laser <= 0:
-            return self._finish(np.zeros((0, 3)), np.zeros(0, int), None, None, tick_angle, None)
+            return self._finish(np.zeros((0, 3)), np.zeros(0, int), None, None, tick_angle)
         step = tick_angle / points_per_laser
         horizontal = np.mod(self.current_angle + step * np.arange(points_per_laser),
                             s.horizontal_fov) - s.horizontal_fov / 2.0
@@ -85,9 +84,9 @@ class LidarSimulator:
             hits = cast_rays_from_depth(renderer, scene, pose, local, s.range, self.sensor_id,
                                         semantic=s.semantic, ignore_actors=ignore_actors,
                                         pixels_per_degree=self.depth_pixels_per_degree)
-        return self._finish(local, channel, hits, world_dirs, tick_angle, ignore_actors)
+        return self._finish(local, channel, hits, world_dirs, tick_angle)
 
-    def _finish(self, local, channel, hits: RayHits | None, world_dirs, tick_angle, _ignore):
+    def _finish(self, local, channel, hits: RayHits | None, world_dirs, tick_angle):
         s = self.spec
         self.current_angle = math.fmod(self.current_angle + tick_angle, s.horizontal_fov)
         angle = math.radians(self.current_angle)
@@ -132,8 +131,8 @@ class LidarSimulator:
             rec["object_idx"], rec["object_tag"] = semantic[:, 0], semantic[:, 1]
             raw = rec.tobytes()
         else:
-            raw = pts.astype("<f4").tobytes()
-        return LidarScan(angle, counts, raw, pts, semantic)
+            raw = pts.tobytes()  # float32 already
+        return LidarScan(angle, counts, raw, pts)
 
 
 def cast_rays_from_depth(renderer: Renderer, scene: Scene, pose: Transform, local_dirs: np.ndarray,
@@ -144,7 +143,7 @@ def cast_rays_from_depth(renderer: Renderer, scene: Scene, pose: Transform, loca
     among up to four virtual pinhole cameras at the sensor (yaw 0, 90, 180,
     -90 degrees), each rendered with the depth (and, for a semantic LiDAR,
     segmentation) output; each ray reads its nearest pixel. Normals come from
-    the depth image's gradient."""
+    the depth image's gradient (semantic LiDAR only)."""
     n = len(local_dirs)
     distance = np.full(n, np.inf)
     normal = np.zeros((n, 3))
@@ -183,15 +182,12 @@ def cast_rays_from_depth(renderer: Renderer, scene: Scene, pose: Transform, loca
                                                   max_depth=max_distance,
                                                   ignore_actors=ignore_actors))
         depth = frame.depth
-        fc = camera.focal
-        col = np.clip(np.floor(width / 2.0 + fc * u_t).astype(int), 0, width - 1)
-        row = np.clip(np.floor(height / 2.0 - fc * v_t).astype(int), 0, height - 1)
+        col, row = camera.project(d)
         z = depth[row, col]
         hit = np.isfinite(z) & (z > 0)
-        dist = np.where(hit, z / d[:, 0], np.inf)
-        distance[sel] = dist
-        cam_normals = _depth_normals(depth, fc)
-        normal[sel] = cam_normals[row, col] @ cam_m[:3, :3].T
+        distance[sel] = np.where(hit, z / d[:, 0], np.inf)
+        if semantic:  # cos_inc_angle needs the surface normal
+            normal[sel] = _normals_at(camera, depth, row, col) @ cam_m[:3, :3].T
         if frame.semantic is not None:
             labels[sel] = frame.semantic[row, col]
         if frame.actor_id is not None:
@@ -199,19 +195,22 @@ def cast_rays_from_depth(renderer: Renderer, scene: Scene, pose: Transform, loca
     return RayHits(distance, normal, labels, actors)
 
 
-def _depth_normals(depth: np.ndarray, focal: float) -> np.ndarray:
-    """(H, W, 3) unit normals in the camera's sensor frame, facing it."""
+def _normals_at(camera: PinholeCamera, depth: np.ndarray, row: np.ndarray,
+                col: np.ndarray) -> np.ndarray:
+    """(N, 3) unit normals in the camera's sensor frame, facing it, from the
+    depth image's central differences at the given pixels."""
     h, w = depth.shape
+    rays = camera.pixel_rays()
     z = np.where(np.isfinite(depth), depth, 0.0)
-    u = (np.arange(w) + 0.5 - w / 2.0) / focal
-    v = (np.arange(h) + 0.5 - h / 2.0) / focal
-    uu, vv = np.meshgrid(u, v)
-    pts = np.stack([z, z * uu, -z * vv], axis=-1)
-    du = np.gradient(pts, axis=1)
-    dv = np.gradient(pts, axis=0)
-    n = np.cross(du, dv)
+
+    def point(r, c):
+        return z[r, c, None] * rays[r, c]
+
+    c0, c1 = np.maximum(col - 1, 0), np.minimum(col + 1, w - 1)
+    r0, r1 = np.maximum(row - 1, 0), np.minimum(row + 1, h - 1)
+    n = np.cross(point(row, c1) - point(row, c0), point(r1, col) - point(r0, col))
     norm = np.linalg.norm(n, axis=-1, keepdims=True)
     n = np.where(norm > 1e-12, n / np.maximum(norm, 1e-12), np.array([-1.0, 0.0, 0.0]))
-    facing = np.einsum("hwc,hwc->hw", n, pts) > 0  # points away from the camera: flip
-    n[facing] *= -1
+    away = np.einsum("ij,ij->i", n, point(row, col)) > 0
+    n[away] *= -1
     return n
