@@ -15,6 +15,15 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+#: Unreal's left-handed world (y right) <-> the right-handed one with y negated
+#: (y left: OpenDRIVE, ROS). Applied on both sides of a pose it also turns the
+#: body's x forward / y right / z up axes into x forward / y left / z up (FLU).
+FLIP_Y = np.diag([1.0, -1.0, 1.0])
+
+#: sensor axes (x forward, y right, z up) -> OpenCV camera axes (x right, y down,
+#: z forward): row i is camera axis i in sensor coordinates.
+CV_FROM_SENSOR = np.array([[0.0, 1.0, 0.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]])
+
 
 @dataclass(frozen=True)
 class Transform:
@@ -40,6 +49,11 @@ class Transform:
         m[:3, :3] = self.rotation_matrix()
         m[:3, 3] = self.location
         return m
+
+    def right_handed_matrix(self) -> np.ndarray:
+        """4x4 body-to-world in the right-handed frame (y negated, see
+        :func:`right_handed`): what OpenDRIVE- or ROS-framed renderers take."""
+        return right_handed(self.matrix())
 
     def inverse_matrix(self) -> np.ndarray:
         """4x4 world-to-local matrix."""
@@ -117,11 +131,7 @@ class PinholeCamera:
     def world_to_camera_cv(self) -> np.ndarray:
         """4x4 world-to-camera matrix in the OpenCV convention (x right, y down,
         z forward), what most splatting rasterizers take as the view matrix."""
-        sensor_to_cv = np.array([[0.0, 1.0, 0.0, 0.0],   # cv x = sensor y (right)
-                                 [0.0, 0.0, -1.0, 0.0],  # cv y = -sensor z (down)
-                                 [1.0, 0.0, 0.0, 0.0],   # cv z = sensor x (forward)
-                                 [0.0, 0.0, 0.0, 1.0]])
-        return sensor_to_cv @ self.pose.inverse_matrix()
+        return view_matrix_cv(self.pose.location, self.pose.rotation_matrix())
 
 
 @functools.lru_cache(maxsize=32)
@@ -142,6 +152,59 @@ def rotation_from_matrix(r: np.ndarray) -> tuple[float, float, float]:
     yaw = math.degrees(math.atan2(forward[1], forward[0]))
     roll = math.degrees(math.atan2(-right[2], up[2]))
     return pitch, yaw, roll
+
+
+def right_handed(pose: np.ndarray) -> np.ndarray:
+    """A 4x4 CARLA pose (Unreal world, rotation columns forward / right / up)
+    in the right-handed frame with y negated, its body x forward / y left / z
+    up (FLU): ``FLIP_Y @ pose @ FLIP_Y``. A proper rotation; the inverse is
+    the same operation."""
+    m = np.asarray(pose, dtype=float)
+    out = np.eye(4)
+    out[:3, :3] = FLIP_Y @ m[:3, :3] @ FLIP_Y
+    out[:3, 3] = FLIP_Y @ m[:3, 3]
+    return out
+
+
+def flu_axes(axes: np.ndarray) -> np.ndarray:
+    """A sensor's axes (columns forward, right, up, in any world frame, e.g.
+    a renderer's after mapping a CARLA pose) as forward, left, up columns."""
+    return np.asarray(axes, dtype=float) @ FLIP_Y
+
+
+def view_matrix_cv(position, axes: np.ndarray) -> np.ndarray:
+    """4x4 world-to-camera (OpenCV: x right, y down, z forward) of a camera at
+    ``position`` whose axes (columns forward, right, up, CARLA's sensor axes)
+    are given in some world frame: CARLA's, or a renderer's own after mapping
+    the pose into it."""
+    r = CV_FROM_SENSOR @ np.asarray(axes, dtype=float).T
+    view = np.eye(4)
+    view[:3, :3] = r
+    view[:3, 3] = -r @ np.asarray(position, dtype=float)
+    return view
+
+
+def quaternion_xyzw(rotation: np.ndarray) -> tuple[float, float, float, float]:
+    """``(x, y, z, w)`` of a proper rotation matrix (right-handed: use
+    :func:`right_handed` first for a CARLA pose), with ``w >= 0``."""
+    r = np.asarray(rotation, dtype=float)
+    trace = r[0, 0] + r[1, 1] + r[2, 2]
+    if trace > 0:
+        s = 2.0 * math.sqrt(trace + 1.0)
+        q = (0.25 * s, (r[2, 1] - r[1, 2]) / s, (r[0, 2] - r[2, 0]) / s, (r[1, 0] - r[0, 1]) / s)
+    elif r[0, 0] > r[1, 1] and r[0, 0] > r[2, 2]:
+        s = 2.0 * math.sqrt(1.0 + r[0, 0] - r[1, 1] - r[2, 2])
+        q = ((r[2, 1] - r[1, 2]) / s, 0.25 * s, (r[0, 1] + r[1, 0]) / s, (r[0, 2] + r[2, 0]) / s)
+    elif r[1, 1] > r[2, 2]:
+        s = 2.0 * math.sqrt(1.0 + r[1, 1] - r[0, 0] - r[2, 2])
+        q = ((r[0, 2] - r[2, 0]) / s, (r[0, 1] + r[1, 0]) / s, 0.25 * s, (r[1, 2] + r[2, 1]) / s)
+    else:
+        s = 2.0 * math.sqrt(1.0 + r[2, 2] - r[0, 0] - r[1, 1])
+        q = ((r[1, 0] - r[0, 1]) / s, (r[0, 2] + r[2, 0]) / s, (r[1, 2] + r[2, 1]) / s, 0.25 * s)
+    w, x, y, z = (float(v) for v in q)
+    if w < 0:
+        w, x, y, z = -w, -x, -y, -z
+    return x, y, z, w
 
 
 def transform_from_matrix(m: np.ndarray) -> Transform:

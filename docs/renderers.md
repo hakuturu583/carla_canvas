@@ -50,6 +50,20 @@ serve(FlatRenderer(), "0.0.0.0:50051")
 | `max_depth` | ignore anything farther |
 | `ignore_actors` | actors not to draw (a LiDAR's own vehicle) |
 
+Poses are CARLA's world transforms, from the tick's snapshot (the sensor's
+own entry: no parent × offset arithmetic in a renderer). `carla_canvas.geometry`
+converts them for renderers in other conventions, so that no backend
+re-derives the handedness flip:
+
+| helper | |
+|---|---|
+| `Transform.right_handed_matrix()`, `right_handed(m)` | 4x4 in the right-handed frame with y negated (OpenDRIVE, ROS: CARLA's ROS publisher's transform), body x forward / y left / z up |
+| `view_matrix_cv(position, axes)` | OpenCV world-to-camera of a camera whose forward / right / up axes are given in any world frame (a renderer's own, after mapping the pose) |
+| `flu_axes(axes)` | forward / right / up columns → forward / left / up |
+| `quaternion_xyzw(r)` | of a proper rotation |
+| `FLIP_Y`, `CV_FROM_SENSOR` | the underlying matrices |
+| `Scene.parent_transform(id)` | the world transform of a sensor's vehicle |
+
 `CameraFrame` (all `(height, width, …)`):
 
 | output | array | |

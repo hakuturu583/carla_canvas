@@ -8,10 +8,16 @@ from carla_canvas.encodings import decode_depth, depth_bgra
 from carla_canvas.geometry import (
     PinholeCamera,
     Transform,
+    flu_axes,
+    quaternion_xyzw,
+    right_handed,
     rotation_from_matrix,
     rotation_matrix,
     transform_from_matrix,
+    view_matrix_cv,
 )
+from carla_canvas.ros.bridge import carla_to_ros_transform
+from carla_canvas.scene import ActorInfo, ActorState, Scene
 
 
 def test_unreal_axes():
@@ -33,6 +39,48 @@ def test_rotation_round_trip(rot):
     p = np.array([[1.0, -2.0, 0.5]])
     np.testing.assert_allclose(t.inverse_transform_points(t.transform_points(p)), p, atol=1e-12)
     np.testing.assert_allclose(t.inverse_matrix() @ t.matrix(), np.eye(4), atol=1e-12)
+
+
+def _quat_matrix(x, y, z, w):
+    return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                     [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                     [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+
+
+@pytest.mark.parametrize("rot", [(0, 0, 0), (10, 30, -5), (-20, 135, 40), (5, -90, 170)])
+def test_right_handed_pose_is_carla_ros_transform(rot):
+    """right_handed() is the frame CARLA's ROS publisher uses (y negated,
+    TransformFromCarlaRotation), and quaternion_xyzw its quaternion."""
+    t = Transform((12.0, -3.5, 1.2), rot)
+    m = t.right_handed_matrix()
+    ros = carla_to_ros_transform(t.location, t.rotation)
+    np.testing.assert_allclose(m[:3, 3], (ros.translation.x, ros.translation.y, ros.translation.z))
+    q = ros.rotation
+    np.testing.assert_allclose(m[:3, :3], _quat_matrix(q.x, q.y, q.z, q.w), atol=1e-9)
+    assert np.isclose(np.linalg.det(m[:3, :3]), 1.0)
+    np.testing.assert_allclose(_quat_matrix(*quaternion_xyzw(m[:3, :3])), m[:3, :3], atol=1e-9)
+    np.testing.assert_allclose(right_handed(m), t.matrix(), atol=1e-12)  # an involution
+    # FLU axes: the body's left is CARLA's -right
+    np.testing.assert_allclose(flu_axes(t.rotation_matrix())[:, 1], -t.rotation_matrix()[:, 1])
+
+
+def test_view_matrix_cv():
+    t = Transform((1.0, 2.0, 3.0), (0.0, 90.0, 0.0))  # looking along +y
+    view = view_matrix_cv(t.location, t.rotation_matrix())
+    np.testing.assert_allclose(view @ [1.0, 7.0, 3.0, 1.0], [0, 0, 5, 1], atol=1e-12)  # ahead
+    np.testing.assert_allclose(view @ [0.0, 2.0, 3.0, 1.0], [1, 0, 0, 1], atol=1e-12)  # right
+    np.testing.assert_allclose(view @ [1.0, 2.0, 2.0, 1.0], [0, 1, 0, 1], atol=1e-12)  # below
+    np.testing.assert_allclose(PinholeCamera(4, 2, 90.0, t).world_to_camera_cv(), view)
+
+
+def test_parent_transform():
+    scene = Scene()
+    scene.add_actor(ActorInfo(10, "vehicle.ego"))
+    scene.add_actor(ActorInfo(11, "sensor.camera.rgb", parent_id=10))
+    scene.add_actor(ActorInfo(12, "sensor.camera.rgb", parent_id=99))
+    scene.states[10] = ActorState(Transform((5.0, 0.0, 0.0)))
+    assert scene.parent_transform(11) == Transform((5.0, 0.0, 0.0))
+    assert scene.parent_transform(10) is None and scene.parent_transform(12) is None
 
 
 def test_camera_model():
