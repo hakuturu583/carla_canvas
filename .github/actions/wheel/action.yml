@@ -15,8 +15,8 @@ runs:
       with:
         path: ${{ runner.temp }}/wheel-build
         # Keep the cibuildwheel version in step with `uses:` below.
-        key: wheel-manylinux_2_28-${{ inputs.arch }}-cibuildwheel-v3.1.4-${{ hashFiles('cmake/**') }}-${{ github.sha }}
-        restore-keys: wheel-manylinux_2_28-${{ inputs.arch }}-cibuildwheel-v3.1.4-${{ hashFiles('cmake/**') }}-
+        # One entry (~1 GB) per dependency set: cmake/FetchDeps.cmake pins them.
+        key: wheel-manylinux_2_28-${{ inputs.arch }}-cibuildwheel-v3.1.4-${{ hashFiles('cmake/**') }}
     - uses: pypa/cibuildwheel@v3.1.4
       env:
         CIBW_BUILD: cp312-manylinux_${{ inputs.arch }}
