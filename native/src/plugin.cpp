@@ -190,6 +190,7 @@ struct SensorState {
   bool listening = false;  // the program has a stream
   bool ros = false;  // enable_for_ros()
   bool spawned = false;  // SpawnSensor done in the current episode
+  bool seen = false;  // in a snapshot already
 };
 
 class Plugin {
@@ -419,9 +420,30 @@ class Plugin {
     if (ts.frame <= last_frame_) return;
     load_world(world);
 
+    const size_t n = api_.tsc_world_snapshot_size(snapshot);
+    std::vector<tsc_actor_snapshot_t> actors(n);
+    std::set<uint32_t> present;
+    for (size_t i = 0; i < n; ++i) {
+      api_.check(api_.tsc_world_snapshot_get(snapshot, i, &actors[i]), "WorldSnapshot[i]");
+      present.insert(actors[i].id);
+    }
+    // A sensor gone from the world without Actor.destroy() (a batch
+    // DestroyActor, another client): forget it, as destroy() would.
+    // Only once it was in an earlier snapshot: an asynchronous snapshot may
+    // predate the sensor's spawn.
+    std::vector<uint32_t> vanished;
+    for (auto &[id, sensor] : sensors_) {
+      if (present.count(id) != 0) {
+        sensor.seen = true;
+      } else if (sensor.seen) {
+        vanished.push_back(id);
+      }
+    }
+    for (uint32_t id : vanished) destroyed(id);
+
     pb::RenderRequest request;
     for (auto &[id, sensor] : sensors_) {
-      if (!sensor.listening && !sensor.ros) continue;
+      if ((!sensor.listening && !sensor.ros) || !sensor.seen) continue;
       if (sensor.last_time >= 0.0 && sensor.sensor_tick > 0.0 &&
           ts.elapsed_seconds - sensor.last_time + 1e-9 < sensor.sensor_tick) {
         continue;
@@ -444,18 +466,13 @@ class Plugin {
     t->set_elapsed_seconds(ts.elapsed_seconds);
     t->set_delta_seconds(ts.delta_seconds);
     t->set_platform_timestamp(ts.platform_timestamp);
-    std::set<uint32_t> present;
-    const size_t n = api_.tsc_world_snapshot_size(snapshot);
-    for (size_t i = 0; i < n; ++i) {
-      tsc_actor_snapshot_t a{};
-      api_.check(api_.tsc_world_snapshot_get(snapshot, i, &a), "WorldSnapshot[i]");
+    for (const auto &a : actors) {
       auto *out = snap->add_actors();
       out->set_id(a.id);
       to_proto(a.transform, out->mutable_transform());
       to_proto(a.velocity, out->mutable_velocity());
       to_proto(a.angular_velocity, out->mutable_angular_velocity());
       to_proto(a.acceleration, out->mutable_acceleration());
-      present.insert(a.id);
       if (known_actors_.count(a.id) == 0) {
         Handle<tsc_actor_t> actor(api_);
         if (api_.tsc_world_get_actor(world, a.id, actor.out()) == TSC_OK && actor) {

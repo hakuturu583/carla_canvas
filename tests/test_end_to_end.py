@@ -75,6 +75,17 @@ def test_unchanged_program_gets_rendered_sensors(tmp_path, plugin, make_server):
     assert service.sensors == {}
 
 
+def test_sensor_destroyed_by_a_batch_command(tmp_path, plugin, make_server):
+    stub, service = make_server(PrimitiveRenderer(), ros_backend="none")
+    config = tmp_path / "canvas.yaml"
+    config.write_text(f'renderer: {{endpoint: "{service.config.endpoint}"}}\n')
+    result = run_program(ROOT / "tests" / "programs" / "batch_destroy.py", config)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "first 16" in result.stdout and "batch error False" in result.stdout
+    assert "second True" in result.stdout and "done" in result.stdout
+    assert service.sensors == {}
+
+
 def test_gaussian_splatting_end_to_end(tmp_path, plugin, make_server):
     from carla_canvas.renderers.demo_assets import write_demo_assets
     from carla_canvas.renderers.gaussian_splatting import GaussianSplattingRenderer

@@ -93,6 +93,9 @@ world.tick() ─▶ server ─▶ frame N
   only; the renderer returns no measurement for it.
 * A sensor whose handles are all released (no stream left) stops being
   delivered: `tsc_sensor_source_push` reports it.
+* A sensor is rendered from the first snapshot that contains it; one that
+  leaves the snapshots without `Actor.destroy()` (a batch `DestroyActor`,
+  another client) is forgotten and removed from the renderer.
 
 The actors' static data (`Actor`: type id, attributes, parent, bounding box)
 crosses once, when an actor first appears in a snapshot; afterwards only
