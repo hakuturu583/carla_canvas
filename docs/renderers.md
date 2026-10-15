@@ -85,6 +85,10 @@ max_distance, ignore_actors)` when the renderer has exact ray casts (again
 `semantic_lidar = True` if they fill the semantic fields), else depth images
 (`renderer.options.lidar_pixels_per_degree`).
 
+A renderer may serve only cameras or only LiDARs: the configuration can give
+cameras and LiDARs different backends (`renderer.camera` / `renderer.lidar`,
+docs/configuration.md), each loading the world with its own assets.
+
 ## splatsim
 
 [splatsim](https://github.com/hakuturu583/splatsim) plugs in as a backend

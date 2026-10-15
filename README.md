@@ -126,6 +126,11 @@ ros:
 | `primitives` | reference renderer: the ground plane and every actor's bounding box, ray traced (no assets) | everything, with exact ray casts |
 | `package.module:Class` | yours: subclass `carla_canvas.Renderer` | what you declare |
 
+Cameras and LiDARs can each have their own backend: `renderer.camera` and
+`renderer.lidar` override `backend`, `assets` and `options` for that sensor
+kind, e.g. splatsim for cameras and a ray-traced mesh renderer for LiDARs
+([docs/configuration.md](docs/configuration.md#cameras-and-lidars-on-different-backends)).
+
 Writing one takes two methods ([docs/renderers.md](docs/renderers.md)):
 
 ```python

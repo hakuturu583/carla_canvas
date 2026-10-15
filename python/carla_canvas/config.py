@@ -2,8 +2,9 @@
 
 One file serves both sides: the client plugin reads ``renderer.endpoint``,
 ``renderer.command`` and ``sensors``; the renderer service reads
-``renderer`` (which backend, its assets and options) and ``ros``. See
-docs/configuration.md for every key.
+``renderer`` (which backend, its assets and options; ``renderer.camera`` and
+``renderer.lidar`` may name another backend for cameras or LiDARs) and
+``ros``. See docs/configuration.md for every key.
 """
 
 from __future__ import annotations
@@ -24,8 +25,33 @@ DEFAULT_SENSORS = ("sensor.camera.rgb", "sensor.camera.depth",
                    "sensor.lidar.ray_cast", "sensor.lidar.ray_cast_semantic")
 
 
+# Sensor kinds whose backend `renderer.<kind>` can choose.
+SENSOR_KINDS = ("camera", "lidar")
+_KIND_KEYS = {"backend", "assets", "options"}
+DEFAULT_BACKEND = "primitives"
+
+
 class ConfigError(ValueError):
     pass
+
+
+def merge(base: dict, over: dict) -> dict:
+    """Deep merge: `over`'s keys win, mappings merge."""
+    out = dict(base)
+    for k, v in over.items():
+        out[k] = merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+    return out
+
+
+def renderer_section(renderer: dict, kind: str) -> dict:
+    """The `renderer` section as `kind`'s backend sees it: `renderer.<kind>`
+    over the rest (its backend and assets replace, its options merge)."""
+    base = {k: v for k, v in renderer.items() if k not in SENSOR_KINDS}
+    override = renderer.get(kind) or {}
+    section = merge(base, override)
+    if "assets" in override:
+        section["assets"] = override["assets"]
+    return section
 
 
 @dataclass
@@ -50,7 +76,9 @@ class CanvasConfig:
     timeout: float = 30.0
     startup_timeout: float = 60.0
     async_render: bool = True
-    backend: str = "primitives"
+    backend: str = DEFAULT_BACKEND
+    #: each sensor kind's backend (renderer.camera / renderer.lidar, else backend)
+    backends: dict[str, str] = field(default_factory=dict)
     options: dict[str, Any] = field(default_factory=dict)
     assets: dict[str, Any] = field(default_factory=dict)
     renderer: dict[str, Any] = field(default_factory=dict)  # the raw `renderer` section
@@ -84,6 +112,16 @@ def parse_config(data: Any, path: Path | None = None) -> CanvasConfig:
     config.startup_timeout = float(renderer.get("startup_timeout", config.startup_timeout))
     config.async_render = bool(renderer.get("async", True))
     config.backend = str(renderer.get("backend", config.backend))
+    for kind in SENSOR_KINDS:
+        section = _section(renderer, kind)
+        unknown = set(section) - _KIND_KEYS
+        if unknown:
+            raise ConfigError(f"`renderer.{kind}` takes {', '.join(sorted(_KIND_KEYS))}, "
+                              f"not {', '.join(sorted(unknown))}")
+        for key in ("assets", "options"):
+            if not isinstance(section.get(key) or {}, dict):
+                raise ConfigError(f"`renderer.{kind}.{key}` must be a mapping")
+        config.backends[kind] = str(section.get("backend", config.backend))
     config.options = _section(renderer, "options")
     assets = renderer.get("assets") or {}
     if not isinstance(assets, dict):

@@ -43,14 +43,13 @@ def _config_path(arg: str | None) -> str:
 
 
 def _serve(args) -> int:
-    from .server import load_backend, serve
+    from .server import load_renderer, serve
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="[carla_canvas] %(message)s")
     config = load_config(_config_path(args.config))
     endpoint = args.endpoint or config.endpoint
-    backend = args.backend or config.backend
-    renderer = load_backend(backend, config.options)
+    renderer = load_renderer(config, args.backend)
     serve(renderer, endpoint, config)
     return 0
 
@@ -85,7 +84,9 @@ def _info(args) -> int:
         print(f"config             INVALID: {e}")
         return 1
     print(f"config             {config.path}")
-    print(f"renderer           {config.backend} at {config.endpoint}"
+    backends = config.backend if len(set(config.backends.values())) <= 1 else \
+        ", ".join(f"{kind}: {name}" for kind, name in config.backends.items())
+    print(f"renderer           {backends} at {config.endpoint}"
           + (f" (started with: {shlex.join(config.command)})" if config.command else ""))
     print(f"sensors            {', '.join(r.type + (f' [{r.role_name}]' if r.role_name else '') for r in config.sensors)}")
     print(f"ros                {config.ros.backend}")

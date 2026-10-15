@@ -17,7 +17,7 @@ from concurrent import futures
 
 import grpc
 
-from ..config import CanvasConfig
+from ..config import SENSOR_KINDS, CanvasConfig, renderer_section
 from ..renderer import Renderer
 from ..ros.bridge import RosBridge
 from ..ros.transports import make_transport
@@ -42,6 +42,25 @@ def load_backend(name: str, options: dict | None = None) -> Renderer:
     if not (isinstance(renderer_cls, type) and issubclass(renderer_cls, Renderer)):
         raise TypeError(f"{target} is not a carla_canvas.Renderer")
     return renderer_cls(options or {})
+
+
+def load_renderer(config: CanvasConfig, backend: str | None = None) -> Renderer:
+    """The configured renderer: `renderer.backend` (or `backend`), or a
+    SplitRenderer when `renderer.camera` / `renderer.lidar` choose another
+    backend, assets or options for cameras or LiDARs."""
+    base = dict(config.renderer)
+    if backend:
+        base["backend"] = backend
+    sections = {kind: renderer_section(base, kind) for kind in SENSOR_KINDS}
+
+    def make(section: dict) -> Renderer:
+        return load_backend(str(section.get("backend", config.backend)), section.get("options"))
+
+    if sections["camera"] == sections["lidar"]:
+        return make(sections["camera"])
+    from ..renderers.split import SplitRenderer
+
+    return SplitRenderer(make(sections["camera"]), make(sections["lidar"]))
 
 
 def make_service(renderer: Renderer, config: CanvasConfig | None = None) -> RendererService:
@@ -110,4 +129,5 @@ def _watch_parent(server) -> None:
     threading.Thread(target=watch, name="carla_canvas-parent", daemon=True).start()
 
 
-__all__ = ["BUILTIN_BACKENDS", "RendererService", "load_backend", "make_service", "serve", "start"]
+__all__ = ["BUILTIN_BACKENDS", "RendererService", "load_backend", "load_renderer", "make_service",
+           "serve", "start"]

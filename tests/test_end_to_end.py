@@ -108,6 +108,30 @@ def test_gaussian_splatting_end_to_end(tmp_path, plugin, make_server):
     assert renderer.world is not None and len(renderer.world.means) == 3600
 
 
+def test_cameras_and_lidars_on_different_backends(tmp_path, plugin, make_server):
+    from carla_canvas.config import parse_config
+    from carla_canvas.renderers.demo_assets import write_demo_assets
+    from carla_canvas.server import load_renderer
+
+    write_demo_assets(tmp_path)
+    section = {
+        "backend": "gaussian_splatting",
+        "assets": {"maps": {"*": {"scene": str(tmp_path / "ground.ply")}},
+                   "actors": {"vehicle.*": {"asset": str(tmp_path / "car.ply")}}},
+        "options": {"rasterizer": "numpy"},
+        "lidar": {"backend": "primitives", "assets": {}}}
+    renderer = load_renderer(parse_config({"renderer": section}))
+    stub, service = make_server(renderer, ros_backend="memory", renderer_config=section)
+    config = tmp_path / "canvas.yaml"
+    config.write_text(f'renderer: {{endpoint: "{service.config.endpoint}"}}\n')
+    result = run_program(ROOT / "tests" / "programs" / "callbacks_ros.py", config)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "tick 3 image 3 lidar 3" in result.stdout
+    # the cameras' splats were loaded; the LiDARs had the primitives' exact ray casts
+    assert renderer.camera.world is not None and len(renderer.camera.world.means) == 3600
+    assert renderer.lidar.name == "primitives"
+
+
 def test_plugin_starts_the_renderer(tmp_path, plugin):
     port = free_port()
     config = tmp_path / "canvas.yaml"

@@ -86,3 +86,18 @@ ros: {backend: cyclonedds, domain_id: 5}
             parse_config(bad)
     with pytest.raises(ConfigError, match="nope.yaml"):
         load_config(tmp_path / "nope.yaml")
+
+
+def test_renderer_sections_per_sensor_kind():
+    from carla_canvas.config import renderer_section
+
+    renderer = {"backend": "a", "endpoint": "e", "assets": {"maps": {"A*": 1}},
+                "options": {"x": 1, "y": 2},
+                "lidar": {"backend": "b", "assets": {"maps": {"B*": 2}}, "options": {"y": 3}}}
+    camera = renderer_section(renderer, "camera")
+    lidar = renderer_section(renderer, "lidar")
+    assert camera == {"backend": "a", "endpoint": "e", "assets": {"maps": {"A*": 1}},
+                      "options": {"x": 1, "y": 2}}
+    assert lidar["backend"] == "b" and lidar["endpoint"] == "e"
+    assert lidar["assets"] == {"maps": {"B*": 2}}  # replaced, not merged
+    assert lidar["options"] == {"x": 1, "y": 3}

@@ -18,7 +18,7 @@ import numpy as np
 from google.protobuf import json_format
 
 from .. import __version__, encodings
-from ..config import CanvasConfig
+from ..config import CanvasConfig, merge
 from ..geometry import PinholeCamera
 from ..lidar import LidarSimulator
 from ..renderer import CameraView, Renderer, WorldInfo
@@ -39,14 +39,6 @@ class SensorRuntime:
     lidar: LidarSimulator | None = None
     #: its last measurement, answered again when the client retries that frame
     last: pb.SensorData | None = None
-
-
-def merge(base: dict, over: dict) -> dict:
-    """Deep merge: `over`'s keys win, mappings merge."""
-    out = dict(base)
-    for k, v in over.items():
-        out[k] = merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
-    return out
 
 
 class RenderError(Exception):

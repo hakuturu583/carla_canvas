@@ -321,3 +321,61 @@ def test_auto_ros_without_ros_packages(monkeypatch):
     assert transports.make_transport("auto") is None
     with pytest.raises(transports.TransportError):
         transports.make_transport("cyclonedds")
+
+
+class FlatCamera(Renderer):
+    """A camera-only backend: one color, records its world's section."""
+    name = "flat"
+    camera_outputs = frozenset({"rgb"})
+
+    def load_world(self, world):
+        self.world = world
+
+    def render_camera(self, view):
+        return CameraFrame(rgb=np.full((view.camera.height, view.camera.width, 3),
+                                       self.options.get("color", 7), np.uint8))
+
+
+def test_separate_camera_and_lidar_backends(make_server):
+    from carla_canvas.config import parse_config
+    from carla_canvas.renderers.split import SplitRenderer
+    from carla_canvas.server import load_renderer
+
+    section = {"backend": "test_service:FlatCamera", "options": {"color": 9},
+               "assets": {"maps": {"*": "camera.ply"}},
+               "lidar": {"backend": "primitives", "options": {"ground_z": 0.0},
+                         "assets": {"maps": {"*": "lidar.ply"}}}}
+    config = parse_config({"renderer": section})
+    assert config.backends == {"camera": "test_service:FlatCamera", "lidar": "primitives"}
+    renderer = load_renderer(config)
+    assert isinstance(renderer, SplitRenderer)
+    assert isinstance(renderer.camera, FlatCamera) and isinstance(renderer.lidar, PrimitiveRenderer)
+    # one backend for both when nothing differs
+    assert isinstance(load_renderer(parse_config({"renderer": {"backend": "primitives"}})),
+                      PrimitiveRenderer)
+    with pytest.raises(ValueError):
+        parse_config({"renderer": {"lidar": {"endpoint": "x"}}})
+
+    stub, service = make_server(renderer, ros_backend="none", renderer_config=section)
+    info = stub.GetInfo(pb.GetInfoRequest())
+    assert list(info.sensor_types) == ["sensor.camera.rgb", "sensor.lidar.ray_cast",
+                                       "sensor.lidar.ray_cast_semantic"]
+    stub.LoadWorld(pb.LoadWorldRequest(map_name="Carla/Maps/Town01", episode_id=1))
+    # each backend got its own section
+    assert renderer.camera.world.config["assets"] == {"maps": {"*": "camera.ply"}}
+    assert renderer.lidar.options["ground_z"] == 0.0 and renderer.camera.options["color"] == 9
+    assert renderer.lidar.options["color"] == 9  # options merge over the shared ones
+    stub.SpawnSensor(pb.SpawnSensorRequest(sensor=actor(
+        CAMERA, "sensor.camera.rgb", VEHICLE, image_size_x=8, image_size_y=4)))
+    stub.SpawnSensor(pb.SpawnSensorRequest(sensor=actor(
+        LIDAR, "sensor.lidar.ray_cast", VEHICLE, channels=8, range=60, points_per_second=8000,
+        upper_fov=0, lower_fov=-30, dropoff_general_rate=0, dropoff_intensity_limit=0)))
+    r = stub.Render(snapshot_request(1, poses(), new=new_actors(),
+                                     sensors=[(CAMERA, True), (LIDAR, True)]))
+    by_id = {d.sensor_id: d for d in r.measurements}
+    image = np.frombuffer(by_id[CAMERA].image.raw_data, np.uint8).reshape(4, 8, 4)
+    assert (image[..., :3] == 9).all()  # the camera backend's
+    assert sum(by_id[LIDAR].lidar.points_per_channel) > 0  # primitives' ray casts: the ground
+    with pytest.raises(grpc.RpcError) as e:
+        stub.SpawnSensor(pb.SpawnSensorRequest(sensor=actor(SEM + 10, "sensor.camera.depth")))
+    assert e.value.code() == grpc.StatusCode.UNIMPLEMENTED

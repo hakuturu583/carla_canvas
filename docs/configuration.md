@@ -16,6 +16,8 @@ renderer:
   async: true                   # also render ticks the program does not make
   assets: {}                    # backend-specific (below)
   options: {}                   # backend-specific (below)
+  # camera: {backend, assets, options}   another backend for cameras (below)
+  # lidar: {backend, assets, options}    another backend for LiDARs (below)
 
 sensors:                        # which sensors carla_canvas renders
   - sensor.camera.rgb           # a blueprint id glob
@@ -44,6 +46,28 @@ ros:
 
 Common `options`: `lidar_pixels_per_degree` (8): resolution of the depth
 images LiDARs read when the renderer has no ray casts.
+
+### Cameras and LiDARs on different backends
+
+`renderer.camera` and `renderer.lidar` choose a backend for one sensor kind.
+Each takes `backend`, `assets` and `options`, over the rest of `renderer`:
+`backend` and `assets` replace, `options` merge. The service then runs both
+backends (`carla_canvas.renderers.split.SplitRenderer`), each loading the
+world with its own section; LiDARs use the LiDAR backend's own way of casting
+rays (its LiDAR rasterizer, ray casts, or depth images of its cameras).
+
+```yaml
+renderer:
+  backend: splatsim.carla_canvas:SplatsimRenderer   # cameras (and LiDARs, unless below)
+  assets: {maps: {"Town10HD*": {scene: scenes/town10.usdz}}}
+  lidar:
+    backend: mypackage.raytrace:MeshLidar           # LiDARs
+    assets: {maps: {"Town10HD*": {mesh: meshes/town10.glb}}}
+    options: {max_bounces: 1}
+```
+
+The sensor types offered are the camera backend's cameras and the LiDAR
+backend's LiDARs. `carla-canvas info` shows each kind's backend.
 
 ### `gaussian_splatting` (reference)
 

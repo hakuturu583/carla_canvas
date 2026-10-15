@@ -1,0 +1,20 @@
+# Cameras and LiDARs on different backends: Gaussian splatting cameras (the
+# reference renderer with synthetic assets) and exact ray-cast LiDARs from the
+# primitives renderer.
+#   python -c "from carla_canvas.renderers.demo_assets import write_demo_assets as w; w('demo_assets')"
+#   CARLA_CANVAS_CONFIG=examples/split_backends.yaml typesafe-codon run examples/camera_lidar.py
+renderer:
+  backend: gaussian_splatting          # cameras
+  command: [carla-canvas, serve, --config, "{config}"]
+  assets:
+    maps:
+      "*": {scene: ../demo_assets/ground.ply}
+    actors:
+      "vehicle.*": {asset: ../demo_assets/car.ply}
+  options:
+    rasterizer: numpy
+  lidar:
+    backend: primitives                # LiDARs: the ground plane and the actors' boxes
+    assets: {}
+ros:
+  backend: none
