@@ -79,7 +79,7 @@ endif()
 if(NOT _grpc_lib)
   list(APPEND _missing "gRPC C++ and protobuf")
 endif()
-if(NOT TARGET yaml-cpp)
+if(NOT TARGET yaml-cpp::yaml-cpp)
   list(APPEND _missing "yaml-cpp")
 endif()
 if(_missing AND NOT CARLA_CANVAS_FETCH_DEPS)
@@ -130,7 +130,7 @@ add_library(carla_canvas_plugin MODULE
 target_include_directories(carla_canvas_plugin PRIVATE
   "${TYPESAFE_CARLA_INCLUDE_DIR}" "${_gen}" native/src)
 target_link_libraries(carla_canvas_plugin PRIVATE
-  ${_grpc_lib} ${_protobuf_lib} yaml-cpp Threads::Threads)
+  ${_grpc_lib} ${_protobuf_lib} yaml-cpp::yaml-cpp Threads::Threads)
 set_target_properties(carla_canvas_plugin PROPERTIES
   OUTPUT_NAME carla_canvas_plugin
   CXX_VISIBILITY_PRESET hidden
@@ -150,6 +150,6 @@ if(CARLA_CANVAS_BUILD_TESTS)
   enable_testing()
   add_executable(test_config native/tests/test_config.cpp native/src/config.cpp)
   target_include_directories(test_config PRIVATE native/src)
-  target_link_libraries(test_config PRIVATE ${_protobuf_lib} yaml-cpp)
+  target_link_libraries(test_config PRIVATE ${_protobuf_lib} yaml-cpp::yaml-cpp)
   add_test(NAME test_config COMMAND test_config "${CMAKE_CURRENT_SOURCE_DIR}/native/tests")
 endif()
