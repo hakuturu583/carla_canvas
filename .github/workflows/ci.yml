@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  # typesafe_carla with the sensor source C ABI (5.3); mock backend: no CARLA server.
+  TYPESAFE_CARLA_REPO: hakuturu583/typesafe_carla
+  TYPESAFE_CARLA_REF: main
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TYPESAFE_CARLA_REPO }}
+          ref: ${{ env.TYPESAFE_CARLA_REF }}
+          path: typesafe_carla
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ cmake zlib1g-dev libgrpc++-dev protobuf-compiler-grpc \
+            libprotobuf-dev protobuf-compiler libyaml-cpp-dev
+      - uses: astral-sh/setup-uv@v5
+      - name: Environment
+        run: |
+          uv venv
+          uv pip install scikit-build-core grpcio grpcio-tools protobuf numpy pyyaml pytest cyclonedds
+          TSC_BACKEND=mock uv pip install ./typesafe_carla
+          uv pip install --no-build-isolation -e .
+      - name: Native tests
+        run: |
+          cmake -S . -B build -DTYPESAFE_CARLA_INCLUDE_DIR=$PWD/typesafe_carla/native/include
+          cmake --build build -j
+          ctest --test-dir build --output-on-failure
+      - name: Python tests
+        run: PATH=$PWD/.venv/bin:$PATH .venv/bin/python -m pytest -v

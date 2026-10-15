@@ -1,0 +1,12 @@
+# The reference renderer (ground plane + actor bounding boxes): no assets.
+#   carla-canvas serve --config examples/primitives.yaml       # or let the plugin start it:
+#   CARLA_CANVAS_CONFIG=examples/primitives.yaml typesafe-codon run examples/camera_lidar.py
+renderer:
+  backend: primitives
+  endpoint: "localhost:50051"
+  command: [carla-canvas, serve, --config, "{config}"]
+sensors:
+  - sensor.camera.*
+  - sensor.lidar.*
+ros:
+  backend: none

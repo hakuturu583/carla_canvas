@@ -1,0 +1,202 @@
+// carla_canvas renderer protocol, version 1.
+//
+// The client side (the carla_canvas sensor plugin, loaded into a typesafe_carla
+// program) drives a renderer service with this protocol. Messages mirror the
+// CARLA Python API: the same names, units and conventions (Unreal's left-handed
+// frame: x forward, y right, z up; meters; degrees; the sensor's world transform
+// in every measurement). A renderer that answers these calls replaces CARLA's
+// camera and LiDAR rendering without any change to the program.
+//
+// Per frame the client sends one Render call: the world snapshot, the actors
+// that appeared or disappeared since the previous call, and the sensors due in
+// this frame. The renderer returns their measurements in CARLA's raw layouts
+// (carla.Image.raw_data, carla.LidarMeasurement.raw_data, ...), which the
+// client queues as LibCarla objects. ROS 2 output is the renderer's job
+// (carla_canvas.ros): the client only forwards enable_for_ros().
+syntax = "proto3";
+
+package carla_canvas.v1;
+
+import "google/protobuf/struct.proto";
+
+// --- carla.* value types --------------------------------------------------------
+
+// carla.Vector3D / carla.Location (meters).
+message Vector3D {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+}
+
+// carla.Rotation (degrees).
+message Rotation {
+  double pitch = 1;
+  double yaw = 2;
+  double roll = 3;
+}
+
+// carla.Transform.
+message Transform {
+  Vector3D location = 1;
+  Rotation rotation = 2;
+}
+
+// carla.BoundingBox: location relative to the actor, half extents.
+message BoundingBox {
+  Vector3D location = 1;
+  Vector3D extent = 2;
+  Rotation rotation = 3;
+}
+
+// carla.ActorAttribute, as its string value (as_str()).
+message ActorAttribute {
+  string id = 1;
+  string value = 2;
+}
+
+// carla.Actor: what does not change over its life.
+message Actor {
+  uint32 id = 1;
+  string type_id = 2;  // the blueprint id, e.g. "vehicle.tesla.model3"
+  uint32 parent_id = 3;  // 0: not attached
+  repeated ActorAttribute attributes = 4;
+  BoundingBox bounding_box = 5;
+}
+
+// carla.ActorSnapshot.
+message ActorSnapshot {
+  uint32 id = 1;
+  Transform transform = 2;  // world frame
+  Vector3D velocity = 3;
+  Vector3D angular_velocity = 4;
+  Vector3D acceleration = 5;
+}
+
+// carla.Timestamp.
+message Timestamp {
+  uint64 frame = 1;
+  double elapsed_seconds = 2;
+  double delta_seconds = 3;
+  double platform_timestamp = 4;
+}
+
+// carla.WorldSnapshot.
+message WorldSnapshot {
+  uint64 id = 1;  // the episode
+  Timestamp timestamp = 2;
+  repeated ActorSnapshot actors = 3;
+}
+
+// --- Measurements (carla.SensorData subclasses) ----------------------------------
+
+// carla.Image: BGRA, 4 bytes per pixel, row-major (raw_data). Depth and
+// segmentation cameras use CARLA's encodings in the same layout.
+message Image {
+  uint32 width = 1;
+  uint32 height = 2;
+  float fov = 3;  // horizontal, degrees
+  bytes raw_data = 4;
+}
+
+// carla.LidarMeasurement: raw_data is {float32 x, y, z, intensity} per point
+// (little endian), in the sensor's frame, grouped by channel.
+message LidarMeasurement {
+  float horizontal_angle = 1;  // radians
+  repeated uint32 points_per_channel = 2;
+  bytes raw_data = 3;
+}
+
+// carla.SemanticLidarMeasurement: raw_data is {float32 x, y, z, cos_inc_angle;
+// uint32 object_idx, object_tag} per point (24 bytes, little endian).
+message SemanticLidarMeasurement {
+  float horizontal_angle = 1;
+  repeated uint32 points_per_channel = 2;
+  bytes raw_data = 3;
+}
+
+message SensorData {
+  uint32 sensor_id = 1;  // the sensor actor's id
+  uint64 frame = 2;
+  double timestamp = 3;  // simulation seconds
+  Transform transform = 4;  // the sensor's world transform
+  oneof data {
+    Image image = 5;
+    LidarMeasurement lidar = 6;
+    SemanticLidarMeasurement semantic_lidar = 7;
+  }
+}
+
+// --- Service ----------------------------------------------------------------------
+
+service Renderer {
+  // What the renderer is and which sensor blueprints it renders.
+  rpc GetInfo(GetInfoRequest) returns (RendererInfo);
+  // The client connected to a world (and again after load_world): the map,
+  // and the configuration's `renderer` section (assets, options).
+  rpc LoadWorld(LoadWorldRequest) returns (LoadWorldResponse);
+  // A sensor the client renders through this service (World.spawn_actor of a
+  // claimed sensor, at its first listen() or enable_for_ros()).
+  rpc SpawnSensor(SpawnSensorRequest) returns (SpawnSensorResponse);
+  // Sensor.destroy(), or the sensor left the world.
+  rpc DestroySensor(DestroySensorRequest) returns (DestroySensorResponse);
+  // Sensor.enable_for_ros() / disable_for_ros(): the renderer publishes the
+  // sensor's ROS 2 topics with CARLA's names and types.
+  rpc EnableForRos(EnableForRosRequest) returns (EnableForRosResponse);
+  // One frame: renders the sensors due and returns the measurements the
+  // client listens to.
+  rpc Render(RenderRequest) returns (RenderResponse);
+}
+
+message GetInfoRequest {}
+
+message RendererInfo {
+  string name = 1;  // e.g. "gaussian_splatting"
+  string version = 2;
+  uint32 protocol_version = 3;  // 1
+  repeated string sensor_types = 4;  // blueprint ids, e.g. "sensor.camera.rgb"
+}
+
+message LoadWorldRequest {
+  string map_name = 1;  // carla.Map.name, e.g. "Carla/Maps/Town10HD_Opt"
+  uint64 episode_id = 2;
+  google.protobuf.Struct renderer_config = 3;  // the configuration's `renderer` section
+}
+
+message LoadWorldResponse {}
+
+message SpawnSensorRequest {
+  Actor sensor = 1;  // its attributes are the blueprint's (image_size_x, channels, ...)
+}
+
+message SpawnSensorResponse {}
+
+message DestroySensorRequest {
+  uint32 sensor_id = 1;
+}
+
+message DestroySensorResponse {}
+
+message EnableForRosRequest {
+  uint32 sensor_id = 1;
+  bool enabled = 2;
+}
+
+message EnableForRosResponse {}
+
+message SensorRequest {
+  uint32 sensor_id = 1;
+  // false: the client does not listen (only the ROS 2 output is needed);
+  // the renderer returns no measurement for it.
+  bool deliver = 2;
+}
+
+message RenderRequest {
+  WorldSnapshot snapshot = 1;
+  repeated Actor new_actors = 2;  // appeared since the previous call
+  repeated uint32 removed_actors = 3;  // gone since the previous call
+  repeated SensorRequest sensors = 4;  // due in this frame
+}
+
+message RenderResponse {
+  repeated SensorData measurements = 1;
+}
