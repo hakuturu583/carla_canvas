@@ -1,14 +1,27 @@
-# Builds carla-canvas's wheels and sdist and publishes them to PyPI.
+# Cuts releases of carla-canvas and publishes its wheels and sdist to PyPI.
 #
 # The wheels carry the sensor plugin with gRPC, protobuf and yaml-cpp built
 # from source and linked in statically (CARLA_CANVAS_FETCH_DEPS), so
 # `pip install 'carla-canvas[client]'` needs no system packages: one
 # py3-none-manylinux_2_28 wheel per architecture.
 #
-#   push a tag v<version>   builds and publishes to PyPI (the tag must match
-#                           python/carla_canvas/__init__.py)
+# There are three ways in, and the first is the everyday one:
+#
+#   push to main   the auto-release path. When the merged PR carries exactly one
+#                  `release:major|minor|patch` label, the `release` job bumps the
+#                  version (tools/bump_version.py), commits it to main, tags
+#                  v<version> and drafts a GitHub release; the tag is built and
+#                  published to PyPI in this same run, and the GitHub release is
+#                  published last. No label, no release.
+#   push a tag v<version>   a hand-cut release: built and published directly
+#                  (the tag must match python/carla_canvas/__init__.py).
 #   workflow_dispatch       a dry run: builds and checks; with publish=true it
-#                           uploads to TestPyPI
+#                  uploads to TestPyPI.
+#
+# It is one workflow rather than a separate `on: push: tags` one on purpose: the
+# auto-release tag is pushed with GITHUB_TOKEN, and a tag pushed with
+# GITHUB_TOKEN starts no new workflow runs, so the follow-up jobs of the run
+# that cut it build and publish it.
 #
 # Publishing uses PyPI Trusted Publishing (OIDC) from the "pypi" / "testpypi"
 # environments: register this workflow as the project's trusted publisher on
@@ -17,6 +30,7 @@ name: Release
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
@@ -29,24 +43,176 @@ permissions:
   contents: read
 
 jobs:
-  version:
+  # Reads the release label off the merged PR and, if there is one, bumps the
+  # version and pushes the tag. Only on a push to main.
+  release:
+    name: cut the release tag
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: read
+    # Never two release cuts at once; a queued one runs after (and fails on the
+    # non-fast-forward push if main moved).
+    concurrency:
+      group: release-main
+      cancel-in-progress: false
+    outputs:
+      bump: ${{ steps.pr.outputs.bump }}
+      tag: ${{ steps.bump.outputs.tag }}
+    steps:
+      - name: Read the release label off the merged PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # An API error fails the job; only an empty list means "no PR".
+          pr_json=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" \
+            --jq '.[0] // empty')
+          if [ -z "$pr_json" ]; then
+            echo "No PR associated with this push: nothing to release"
+            echo "bump=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          labels=$(echo "$pr_json" | jq -r '[.labels[].name] | join(",")')
+          bump=none
+          count=0
+          for lvl in major minor patch; do
+            if echo ",$labels," | grep -q ",release:${lvl},"; then
+              bump=$lvl
+              count=$((count + 1))
+            fi
+          done
+          if [ "$count" -gt 1 ]; then
+            echo "::error::More than one release label on the PR: pick exactly one"
+            exit 1
+          fi
+          echo "bump=${bump}" >> "$GITHUB_OUTPUT"
+          echo "Resolved bump level: ${bump}"
+
+      # The pushed commit, not whatever main is now: the bump is pushed to main
+      # without force, so if main has moved since, the push fails loudly.
+      - uses: actions/checkout@v4
+        if: steps.pr.outputs.bump != 'none'
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Bump the version
+        if: steps.pr.outputs.bump != 'none'
+        id: bump
+        env:
+          BUMP: ${{ steps.pr.outputs.bump }}
+        run: |
+          set -euo pipefail
+          next=$(python3 tools/bump_version.py "$BUMP")
+          echo "version=${next}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${next}" >> "$GITHUB_OUTPUT"
+          echo "Bumped to ${next} (${BUMP})"
+
+      - name: Fail if the version is already tagged or on PyPI
+        if: steps.pr.outputs.bump != 'none'
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+          TAG: ${{ steps.bump.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::Tag ${TAG} already exists"
+            exit 1
+          fi
+          code=$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/carla-canvas/${VERSION}/json")
+          if [ "$code" = 200 ]; then
+            echo "::error::carla-canvas ${VERSION} is already on PyPI"
+            exit 1
+          fi
+
+      - name: Commit, tag and push
+        if: steps.pr.outputs.bump != 'none'
+        env:
+          TAG: ${{ steps.bump.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add python/carla_canvas/__init__.py
+          git commit -m "chore(release): ${TAG}"
+          git tag -a "${TAG}" -m "Release ${TAG}"
+          # Both or neither: a main bump without its tag could not be re-run.
+          git push --atomic origin "HEAD:main" "refs/tags/${TAG}"
+
+      # A draft until `github-release` publishes it, after PyPI.
+      - name: Draft the GitHub release with generated notes
+        if: steps.pr.outputs.bump != 'none'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.bump.outputs.tag }}
+        run: gh release create "${TAG}" --draft --verify-tag --title "${TAG}" --generate-notes
+
+  # For all three entry points: whether to build, which commit, and where to
+  # publish. Runs even when `release` is skipped (tag push, dispatch).
+  resolve:
+    name: resolve what to build
+    needs: [release]
+    if: always() && needs.release.result != 'failure' && needs.release.result != 'cancelled'
     runs-on: ubuntu-24.04
     outputs:
-      version: ${{ steps.v.outputs.version }}
+      proceed: ${{ steps.r.outputs.proceed }}
+      ref: ${{ steps.r.outputs.ref }}
+      tag: ${{ steps.r.outputs.tag }}
+      index: ${{ steps.r.outputs.index }}
+    steps:
+      - id: r
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          BUMP: ${{ needs.release.outputs.bump }}
+          CUT_TAG: ${{ needs.release.outputs.tag }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          proceed=true; ref="$SHA"; tag=""; index=none
+          if [ "$EVENT" = push ] && [ "$REF_TYPE" = branch ]; then
+            if [ "${BUMP:-none}" = none ]; then
+              proceed=false
+            else
+              ref="refs/tags/${CUT_TAG}"; tag="$CUT_TAG"; index=pypi
+            fi
+          elif [ "$EVENT" = push ]; then
+            ref="refs/tags/${REF_NAME}"; tag="$REF_NAME"; index=pypi
+          elif [ "$INPUT_PUBLISH" = true ]; then
+            index=testpypi
+          fi
+          {
+            echo "proceed=$proceed"; echo "ref=$ref"; echo "tag=$tag"; echo "index=$index"
+          } >> "$GITHUB_OUTPUT"
+          echo "proceed=$proceed ref=$ref tag=$tag index=$index"
+
+  version:
+    needs: resolve
+    if: always() && needs.resolve.outputs.proceed == 'true'
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - id: v
+        with: { ref: "${{ needs.resolve.outputs.ref }}" }
+      - name: The tag matches the package version
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
-          version=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' python/carla_canvas/__init__.py)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match the package version $version"
+          version=$(python3 tools/bump_version.py --current)
+          echo "carla-canvas ${version}"
+          if [ -n "$TAG" ] && [ "$TAG" != "v$version" ]; then
+            echo "::error::tag $TAG does not match the package version $version"
             exit 1
           fi
 
   wheel:
     name: wheel (${{ matrix.arch.name }})
-    needs: version
+    needs: [resolve, version]
+    if: always() && needs.version.result == 'success'
     strategy:
       fail-fast: false
       matrix:
@@ -56,6 +222,7 @@ jobs:
     runs-on: ${{ matrix.arch.runner }}
     steps:
       - uses: actions/checkout@v4
+        with: { ref: "${{ needs.resolve.outputs.ref }}" }
       - uses: ./.github/actions/wheel
         with:
           arch: ${{ matrix.arch.name }}
@@ -63,10 +230,12 @@ jobs:
         with: { name: "dist-wheel-${{ matrix.arch.name }}", path: dist/*.whl }
 
   sdist:
-    needs: version
+    needs: [resolve, version]
+    if: always() && needs.version.result == 'success'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with: { ref: "${{ needs.resolve.outputs.ref }}" }
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pipx run build --sdist
@@ -74,10 +243,12 @@ jobs:
         with: { name: dist-sdist, path: dist/*.tar.gz }
 
   publish:
-    needs: [version, wheel, sdist]
-    if: github.ref_type == 'tag' || inputs.publish
+    needs: [resolve, wheel, sdist]
+    if: >-
+      always() && needs.wheel.result == 'success' && needs.sdist.result == 'success'
+      && needs.resolve.outputs.index != 'none'
     runs-on: ubuntu-24.04
-    environment: ${{ github.ref_type == 'tag' && 'pypi' || 'testpypi' }}
+    environment: ${{ needs.resolve.outputs.index }}
     permissions:
       id-token: write  # Trusted Publishing
     steps:
@@ -85,4 +256,25 @@ jobs:
         with: { pattern: "dist-*", path: dist, merge-multiple: true }
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          repository-url: ${{ github.ref_type == 'tag' && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
+          repository-url: ${{ needs.resolve.outputs.index == 'pypi' && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
+
+  # Publishes the GitHub release once PyPI has the version: the auto-release
+  # path drafted it in `release`; a hand-cut tag gets one here.
+  github-release:
+    needs: [resolve, publish]
+    if: always() && needs.publish.result == 'success' && needs.resolve.outputs.tag != ''
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$REPO" --draft=false
+          else
+            gh release create "$TAG" --repo "$REPO" --verify-tag --title "$TAG" --generate-notes
+          fi

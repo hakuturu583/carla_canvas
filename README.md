@@ -158,6 +158,14 @@ uv run pytest                                    # unit, service, ROS, end to en
 uv run python tools/gen_proto.py                 # after editing proto/
 ```
 
+### Releasing
+
+Label the PR `release:patch`, `release:minor` or `release:major`: merging it
+bumps the version, tags `v<version>` and publishes the wheels (x86_64,
+aarch64) and the sdist to PyPI (`.github/workflows/release.yml`). A PR without
+a release label releases nothing. A manual run of the Release workflow is a dry
+run (with `publish`: to TestPyPI).
+
 ## Status
 
 | | |
