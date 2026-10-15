@@ -157,6 +157,13 @@ class Scene:
             raise KeyError(f"actor {actor_id} is not in the snapshot")
         return state.transform
 
+    def parent_transform(self, actor_id: int) -> Transform | None:
+        """The world transform of the actor's parent (a sensor's vehicle), or
+        None when it has none or the parent is not in the snapshot."""
+        info = self.actors.get(actor_id)
+        state = self.states.get(info.parent_id) if info is not None and info.parent_id else None
+        return state.transform if state is not None else None
+
     def bodies(self, exclude: set[int] = frozenset()) -> list[tuple[ActorInfo, Transform]]:
         """Visible actors with a non-empty bounding box and a known transform."""
         out = []

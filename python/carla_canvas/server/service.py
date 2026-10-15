@@ -195,7 +195,7 @@ class RendererService(pb_grpc.RendererServicer):
                        "instance": {"semantic", "instance"}}[spec.kind]
             frame = self.renderer.render_camera(CameraView(
                 PinholeCamera(spec.width, spec.height, spec.fov, pose), scene, frozenset(outputs),
-                sensor.info.id, sensor.info.attributes))
+                sensor.info.id, sensor.info.attributes, frame=self.renderer.coordinate_frame))
             data.image.width, data.image.height, data.image.fov = spec.width, spec.height, spec.fov
             data.image.raw_data = self._encode_camera(spec, frame).tobytes()
         else:

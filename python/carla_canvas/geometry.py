@@ -15,6 +15,61 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+#: The coordinate frames a renderer can work in (``Renderer.coordinate_frame``):
+#:
+#: * ``carla``: CARLA's, Unreal's left-handed frame (world and bodies x forward,
+#:   y right, z up);
+#: * ``right_handed``: the same with y negated (y left), world and bodies: the
+#:   frame of OpenDRIVE, ROS and CARLA's ROS publisher (TransformFromCarlaRotation);
+#:   body axes x forward, y left, z up (FLU).
+COORDINATE_FRAMES = ("carla", "right_handed")
+
+#: Unreal's y right <-> y left; on both sides of a pose it is the change of frame.
+FLIP_Y = np.diag([1.0, -1.0, 1.0])
+
+#: OpenCV camera axes (x right, y down, z forward) in a sensor's body axes: row
+#: i is camera axis i; per coordinate frame (body y right, or y left).
+CV_FROM_BODY = {
+    "carla": np.array([[0.0, 1.0, 0.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]]),
+    "right_handed": np.array([[0.0, -1.0, 0.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]]),
+}
+
+
+def check_frame(frame: str) -> str:
+    if frame not in COORDINATE_FRAMES:
+        raise ValueError(f"coordinate frame {frame!r}: one of {', '.join(COORDINATE_FRAMES)}")
+    return frame
+
+
+def to_frame(pose: np.ndarray, frame: str) -> np.ndarray:
+    """A 4x4 CARLA pose in ``frame`` (and back: the change is an involution)."""
+    if check_frame(frame) == "carla":
+        return np.asarray(pose, dtype=float)
+    m = np.asarray(pose, dtype=float)
+    out = np.eye(4)
+    out[:3, :3] = FLIP_Y @ m[:3, :3] @ FLIP_Y
+    out[:3, 3] = FLIP_Y @ m[:3, 3]
+    return out
+
+
+def vectors_to_frame(v: np.ndarray, frame: str) -> np.ndarray:
+    """(..., 3) points or directions of CARLA's frame in ``frame`` (and back)."""
+    v = np.asarray(v, dtype=float)
+    return v if check_frame(frame) == "carla" else v * (1.0, -1.0, 1.0)
+
+
+def view_matrix_cv(pose: np.ndarray, frame: str = "carla") -> np.ndarray:
+    """4x4 world-to-camera (OpenCV: x right, y down, z forward) of a camera
+    looking along its body x, given its 4x4 body-to-world pose in ``frame``'s
+    conventions. The world may be any one reached from that frame by a proper
+    rigid map (a renderer's scene frame): only the body axes' convention counts."""
+    m = np.asarray(pose, dtype=float)
+    r = CV_FROM_BODY[check_frame(frame)] @ m[:3, :3].T
+    view = np.eye(4)
+    view[:3, :3] = r
+    view[:3, 3] = -r @ m[:3, 3]
+    return view
+
 
 @dataclass(frozen=True)
 class Transform:
@@ -34,12 +89,13 @@ class Transform:
         """3x3: column i is the actor's axis i (forward, right, up) in world coordinates."""
         return rotation_matrix(*self.rotation)
 
-    def matrix(self) -> np.ndarray:
-        """4x4 local-to-world matrix."""
+    def matrix(self, frame: str = "carla") -> np.ndarray:
+        """4x4 local-to-world matrix, in CARLA's frame or another coordinate
+        frame (:data:`COORDINATE_FRAMES`, :func:`to_frame`)."""
         m = np.eye(4)
         m[:3, :3] = self.rotation_matrix()
         m[:3, 3] = self.location
-        return m
+        return to_frame(m, frame)
 
     def inverse_matrix(self) -> np.ndarray:
         """4x4 world-to-local matrix."""
@@ -117,11 +173,7 @@ class PinholeCamera:
     def world_to_camera_cv(self) -> np.ndarray:
         """4x4 world-to-camera matrix in the OpenCV convention (x right, y down,
         z forward), what most splatting rasterizers take as the view matrix."""
-        sensor_to_cv = np.array([[0.0, 1.0, 0.0, 0.0],   # cv x = sensor y (right)
-                                 [0.0, 0.0, -1.0, 0.0],  # cv y = -sensor z (down)
-                                 [1.0, 0.0, 0.0, 0.0],   # cv z = sensor x (forward)
-                                 [0.0, 0.0, 0.0, 1.0]])
-        return sensor_to_cv @ self.pose.inverse_matrix()
+        return view_matrix_cv(self.pose.matrix())
 
 
 @functools.lru_cache(maxsize=32)
@@ -142,6 +194,30 @@ def rotation_from_matrix(r: np.ndarray) -> tuple[float, float, float]:
     yaw = math.degrees(math.atan2(forward[1], forward[0]))
     roll = math.degrees(math.atan2(-right[2], up[2]))
     return pitch, yaw, roll
+
+
+def quaternion_xyzw(rotation: np.ndarray) -> tuple[float, float, float, float]:
+    """``(x, y, z, w)`` of a proper rotation matrix (a ``right_handed`` pose's;
+    CARLA's rotations are proper too, but quaternions are seldom wanted in a
+    left-handed frame), with ``w >= 0``."""
+    r = np.asarray(rotation, dtype=float)
+    trace = r[0, 0] + r[1, 1] + r[2, 2]
+    if trace > 0:
+        s = 2.0 * math.sqrt(trace + 1.0)
+        q = (0.25 * s, (r[2, 1] - r[1, 2]) / s, (r[0, 2] - r[2, 0]) / s, (r[1, 0] - r[0, 1]) / s)
+    elif r[0, 0] > r[1, 1] and r[0, 0] > r[2, 2]:
+        s = 2.0 * math.sqrt(1.0 + r[0, 0] - r[1, 1] - r[2, 2])
+        q = ((r[2, 1] - r[1, 2]) / s, 0.25 * s, (r[0, 1] + r[1, 0]) / s, (r[0, 2] + r[2, 0]) / s)
+    elif r[1, 1] > r[2, 2]:
+        s = 2.0 * math.sqrt(1.0 + r[1, 1] - r[0, 0] - r[2, 2])
+        q = ((r[0, 2] - r[2, 0]) / s, (r[0, 1] + r[1, 0]) / s, 0.25 * s, (r[1, 2] + r[2, 1]) / s)
+    else:
+        s = 2.0 * math.sqrt(1.0 + r[2, 2] - r[0, 0] - r[1, 1])
+        q = ((r[1, 0] - r[0, 1]) / s, (r[0, 2] + r[2, 0]) / s, (r[1, 2] + r[2, 1]) / s, 0.25 * s)
+    w, x, y, z = (float(v) for v in q)
+    if w < 0:
+        w, x, y, z = -w, -x, -y, -z
+    return x, y, z, w
 
 
 def transform_from_matrix(m: np.ndarray) -> Transform:

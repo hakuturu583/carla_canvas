@@ -54,14 +54,12 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..geometry import Transform
+from ..geometry import FLIP_Y, Transform
 from ..renderer import CameraFrame, CameraView, Renderer, WorldInfo
 from ..scene import CityObjectLabel, Scene
 from .gs_ply import GaussianModel, load_ply, sh_to_rgb
 
 log = logging.getLogger("carla_canvas")
-
-FLIP_Y = np.diag([1.0, -1.0, 1.0])
 
 
 def placement_matrix(spec: dict | None) -> np.ndarray:

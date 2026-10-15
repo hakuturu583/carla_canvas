@@ -8,10 +8,16 @@ from carla_canvas.encodings import decode_depth, depth_bgra
 from carla_canvas.geometry import (
     PinholeCamera,
     Transform,
+    quaternion_xyzw,
     rotation_from_matrix,
     rotation_matrix,
+    to_frame,
     transform_from_matrix,
+    view_matrix_cv,
 )
+from carla_canvas.renderer import CameraView, LidarView
+from carla_canvas.ros.bridge import carla_to_ros_transform
+from carla_canvas.scene import ActorInfo, ActorState, Scene
 
 
 def test_unreal_axes():
@@ -33,6 +39,69 @@ def test_rotation_round_trip(rot):
     p = np.array([[1.0, -2.0, 0.5]])
     np.testing.assert_allclose(t.inverse_transform_points(t.transform_points(p)), p, atol=1e-12)
     np.testing.assert_allclose(t.inverse_matrix() @ t.matrix(), np.eye(4), atol=1e-12)
+
+
+def _quat_matrix(x, y, z, w):
+    return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                     [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                     [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+
+
+@pytest.mark.parametrize("rot", [(0, 0, 0), (10, 30, -5), (-20, 135, 40), (5, -90, 170)])
+def test_right_handed_frame_is_carla_ros_transform(rot):
+    """The right_handed frame is the one CARLA's ROS publisher uses (y negated,
+    TransformFromCarlaRotation), and quaternion_xyzw its quaternion."""
+    t = Transform((12.0, -3.5, 1.2), rot)
+    m = t.matrix("right_handed")
+    ros = carla_to_ros_transform(t.location, t.rotation)
+    np.testing.assert_allclose(m[:3, 3], (ros.translation.x, ros.translation.y, ros.translation.z))
+    q = ros.rotation
+    np.testing.assert_allclose(m[:3, :3], _quat_matrix(q.x, q.y, q.z, q.w), atol=1e-9)
+    assert np.isclose(np.linalg.det(m[:3, :3]), 1.0)
+    np.testing.assert_allclose(_quat_matrix(*quaternion_xyzw(m[:3, :3])), m[:3, :3], atol=1e-9)
+    np.testing.assert_allclose(to_frame(m, "right_handed"), t.matrix(), atol=1e-12)
+    np.testing.assert_allclose(t.matrix("carla"), t.matrix())
+    with pytest.raises(ValueError):
+        t.matrix("left")
+
+
+@pytest.mark.parametrize("frame", ["carla", "right_handed"])
+def test_views_in_the_renderers_frame(frame):
+    t = Transform((1.0, 2.0, 3.0), (0.0, 90.0, 0.0))  # looking along CARLA +y
+    scene = Scene()
+    scene.add_actor(ActorInfo(10, "vehicle.ego"))
+    scene.add_actor(ActorInfo(11, "sensor.camera.rgb", parent_id=10))
+    scene.states[10] = ActorState(Transform((5.0, 1.0, 0.0)))
+    scene.states[11] = ActorState(t)
+    view = CameraView(PinholeCamera(4, 2, 90.0, t), scene, frozenset({"rgb"}), 11, frame=frame)
+    to = (lambda p: p) if frame == "carla" else (lambda p: np.multiply(p, (1, -1, 1)))
+    # the same physical points, given in the renderer's frame, land on the same pixels
+    for carla_point, cv in (((1.0, 7.0, 3.0), (0, 0, 5)), ((0.0, 2.0, 3.0), (1, 0, 0)),
+                            ((1.0, 2.0, 2.0), (0, 1, 0))):
+        np.testing.assert_allclose(view.world_to_camera_cv() @ [*to(carla_point), 1.0],
+                                   [*cv, 1.0], atol=1e-12)
+    np.testing.assert_allclose(view.pose_matrix(), t.matrix(frame))
+    np.testing.assert_allclose(view.parent_matrix()[:3, 3], to((5.0, 1.0, 0.0)))
+    np.testing.assert_allclose(view.actor_matrix(11), t.matrix(frame))
+    lidar = LidarView(scene, t, np.array([[0.0, 1.0, 0.0]]), np.array([0]), np.array([0.0]),
+                      np.array([90.0]), 50.0, sensor_id=11, frame=frame)
+    body = lidar.body_directions()
+    np.testing.assert_allclose(np.degrees(np.arctan2(body[:, 1], body[:, 0])),
+                               lidar.body_azimuths())
+    # the world direction from pose @ body direction is the same physical one
+    np.testing.assert_allclose(lidar.pose_matrix()[:3, :3] @ body[0],
+                               to(t.rotation_matrix() @ [0.0, 1.0, 0.0]), atol=1e-12)
+    assert view_matrix_cv(t.matrix()).shape == (4, 4)
+
+
+def test_parent_transform():
+    scene = Scene()
+    scene.add_actor(ActorInfo(10, "vehicle.ego"))
+    scene.add_actor(ActorInfo(11, "sensor.camera.rgb", parent_id=10))
+    scene.add_actor(ActorInfo(12, "sensor.camera.rgb", parent_id=99))
+    scene.states[10] = ActorState(Transform((5.0, 0.0, 0.0)))
+    assert scene.parent_transform(11) == Transform((5.0, 0.0, 0.0))
+    assert scene.parent_transform(10) is None and scene.parent_transform(12) is None
 
 
 def test_camera_model():

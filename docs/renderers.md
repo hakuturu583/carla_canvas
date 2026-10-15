@@ -50,6 +50,38 @@ serve(FlatRenderer(), "0.0.0.0:50051")
 | `max_depth` | ignore anything farther |
 | `ignore_actors` | actors not to draw (a LiDAR's own vehicle) |
 
+### Coordinate frame
+
+A renderer says which frame it works in, and carla_canvas converts for it:
+
+```python
+class MyRenderer(Renderer):
+    coordinate_frame = "right_handed"   # or "carla" (default)
+```
+
+| `coordinate_frame` | world | bodies (sensors, actors) |
+|---|---|---|
+| `carla` | Unreal's, left-handed: x forward, y right, z up | x forward, y right, z up |
+| `right_handed` | the same with y negated: OpenDRIVE's, ROS's (CARLA's ROS publisher's transforms) | x forward, y left, z up (FLU) |
+
+Poses are the CARLA world transforms of the tick's snapshot (a sensor's own
+entry: no parent × mount arithmetic in a renderer). The views give them in
+the renderer's frame:
+
+| accessor | |
+|---|---|
+| `view.pose_matrix()` | 4x4 sensor-to-world |
+| `view.world_to_camera_cv()` | 4x4 world-to-camera, OpenCV axes (x right, y down, z forward); `geometry.view_matrix_cv(pose, frame)` for a pose the renderer mapped further (its own scene frame) |
+| `view.actor_matrix(id)`, `view.parent_matrix()` | an actor's / the sensor's vehicle's 4x4 body-to-world |
+| `lidar_view.body_directions()`, `body_azimuths()` | ray directions in the sensor's body axes, and their atan2(y, x) in degrees |
+
+`cast_rays` gets origins and directions in the renderer's frame, and the
+normals a renderer returns (`cast_rays` or an overridden `cast_lidar_rays`) are
+in it too: carla_canvas converts them back for CARLA's `cos_inc_angle`. `view.scene` (states, `ActorInfo.bounding_box`) and the raw
+fields (`camera.pose`, `directions`, `azimuths`) stay CARLA's;
+`Transform.matrix(frame)` converts any of them. `geometry.quaternion_xyzw`
+gives a rotation's quaternion.
+
 `CameraFrame` (all `(height, width, …)`):
 
 | output | array | |

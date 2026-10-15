@@ -173,3 +173,71 @@ def test_placement_flip_y_mirrors():
 def test_ground_demo_model_is_flat():
     g = ground(size=4.0)
     assert (g.means[:, 2] == 0).all() and (g.labels == CityObjectLabel.Roads).all()
+
+
+class RightHandedPrimitives(PrimitiveRenderer):
+    """The primitives renderer working in the right_handed frame: its rays and
+    normals are y-mirrored versions of CARLA's."""
+
+    coordinate_frame = "right_handed"
+
+    def cast_rays(self, scene, origins, directions, max_distance, ignore_actors=frozenset()):
+        flip = np.array([1.0, -1.0, 1.0])
+        hits = super().cast_rays(scene, origins * flip, directions * flip, max_distance,
+                                 ignore_actors)
+        hits.normal = hits.normal * flip
+        return hits
+
+
+def test_a_right_handed_renderer_gets_the_same_lidar():
+    spec = LidarSpec(semantic=True, channels=8, range=40.0, points_per_second=16000,
+                     upper_fov=5.0, lower_fov=-25.0)
+    scene = scene_with_car(at=(10.0, 3.0, 0.0))
+    pose = Transform((0, 0, 1.0), (0.0, 20.0, 0.0))
+    a = LidarSimulator(spec, 3).scan(PrimitiveRenderer(), scene, pose, 0.05)
+    b = LidarSimulator(spec, 3).scan(RightHandedPrimitives(), scene, pose, 0.05)
+    assert a.raw_data == b.raw_data and len(a.points)
+
+
+class RightHandedNativeLidar(PrimitiveRenderer):
+    """A right_handed renderer with its own cast_lidar_rays: its normals are in
+    its frame too, and carla_canvas converts them back."""
+
+    coordinate_frame = "right_handed"
+
+    def cast_lidar_rays(self, view):
+        pose = view.pose_matrix()
+        world = view.body_directions() @ pose[:3, :3].T
+        flip = np.array([1.0, -1.0, 1.0])
+        hits = super().cast_rays(view.scene, np.broadcast_to(pose[:3, 3], world.shape) * flip,
+                                 world * flip, view.max_distance, view.ignore_actors)
+        hits.normal = hits.normal * flip
+        return hits
+
+
+@pytest.mark.parametrize("renderer", [RightHandedNativeLidar, lambda: _depth_only()])
+def test_right_handed_native_and_depth_lidars_match(renderer):
+    spec = LidarSpec(semantic=True, channels=8, range=40.0, points_per_second=16000,
+                     upper_fov=5.0, lower_fov=-25.0)
+    scene = scene_with_car(at=(10.0, 3.0, 0.0))
+    pose = Transform((0, 0, 1.0), (0.0, 20.0, 0.0))
+    a = np.frombuffer(LidarSimulator(spec, 3).scan(PrimitiveRenderer(), scene, pose, 0.05).raw_data,
+                      SEMANTIC_DTYPE)
+    b = np.frombuffer(LidarSimulator(spec, 3).scan(renderer(), scene, pose, 0.05).raw_data,
+                      SEMANTIC_DTYPE)
+    assert len(a) and len(a) == len(b)
+    if isinstance(renderer, type):
+        assert a.tobytes() == b.tobytes()
+    else:  # depth images: approximate, but the normals' side must be right
+        np.testing.assert_allclose(b["cos_inc_angle"], a["cos_inc_angle"], atol=0.1)
+
+
+def _depth_only():
+    class RightHandedDepth(PrimitiveRenderer):
+        coordinate_frame = "right_handed"
+        # no exact rays for LiDARs (its camera still uses them): depth images
+        supports_rays = property(lambda self: False)
+
+    r = RightHandedDepth()
+    r.options["lidar_pixels_per_degree"] = 20
+    return r
