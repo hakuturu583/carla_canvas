@@ -125,6 +125,35 @@ ros: {{backend: none}}
     assert "started the renderer" in result.stderr
 
 
+def test_the_renderer_gets_none_of_the_programs_descriptors(tmp_path, plugin):
+    """The renderer the plugin starts holds no descriptor of the program's but
+    stdio: a socket it inherited would keep its port bound after the program
+    closed it (a Traffic Manager shut down and started again on its port)."""
+    port = free_port()
+    held, opened = tmp_path / "held.txt", tmp_path / "renderer_fds.txt"
+    # What the renderer's process has open (os.listdir's own descriptor is gone
+    # when it is read), then the renderer.
+    record = ("import os, sys; d = '/proc/self/fd/'; "
+              "fds = [os.readlink(d + fd) for fd in os.listdir(d) if os.path.exists(d + fd)]; "
+              "open(sys.argv[1], 'w').write(' '.join(fds)); "
+              "os.execv(sys.executable, [sys.executable, '-m', 'carla_canvas.cli', "
+              "'serve', '--config', sys.argv[2]])")
+    config = tmp_path / "canvas.yaml"
+    config.write_text(f"""
+renderer:
+  backend: primitives
+  endpoint: "127.0.0.1:{port}"
+  command: ["{sys.executable}", "-c", "{record}", "{opened}", "{{config}}"]
+ros: {{backend: none}}
+""")
+    result = run_program(ROOT / "tests" / "programs" / "held_file.py", config,
+                         {"HELD_FILE": str(held)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "image 16" in result.stdout and "done" in result.stdout
+    assert "started the renderer" in result.stderr
+    assert str(held) not in opened.read_text().split()
+
+
 def test_without_config_carla_renders(tmp_path, plugin):
     env = os.environ.copy()
     env.pop("CARLA_CANVAS_CONFIG", None)

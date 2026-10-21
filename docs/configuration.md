@@ -35,7 +35,7 @@ ros:
 |---|---|---|
 | `backend` | `primitives` | the renderer `carla-canvas serve` runs |
 | `endpoint` | `localhost:50051` | where the plugin connects and the service listens |
-| `command` | none | started by the plugin when nothing answers at `endpoint`; `{config}` is replaced by the file's path. It runs with the program's environment and ends with it |
+| `command` | none | started by the plugin when nothing answers at `endpoint`; `{config}` is replaced by the file's path. It runs with the program's environment and its stdin, stdout and stderr (no other descriptor of the program's), and ends with it |
 | `startup_timeout` | 60 | seconds the plugin waits for a started renderer (also `LoadWorld`'s deadline) |
 | `timeout` | 30 | deadline of every other call |
 | `async` | true | the plugin's thread renders frames from `World.wait_for_tick` too (asynchronous mode) |

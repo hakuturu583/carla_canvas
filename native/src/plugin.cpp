@@ -14,12 +14,15 @@
 #include <grpcpp/grpcpp.h>
 
 #include <signal.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 extern char **environ;
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -140,6 +143,10 @@ class RendererProcess {
   // group, with CARLA_CANVAS_PARENT_PID set: `carla-canvas serve` exits when
   // this process is gone (e.g. killed), and stop() ends it at exit. (Not
   // PR_SET_PDEATHSIG: that follows the forking thread, which may end first.)
+  // It gets the program's stdin, stdout and stderr and no other descriptor: one
+  // it inherited would stay open as long as the renderer runs, so a socket the
+  // program closes -- the Traffic Manager's, shut down at the end of a run --
+  // would still hold its port, and the next one could not be bound there.
   void start(const std::vector<std::string> &command, const std::string &config_path) {
     std::vector<std::string> args;
     for (auto arg : command) {
@@ -162,16 +169,39 @@ class RendererProcess {
     std::vector<char *> envp;
     for (auto &e : env_strings) envp.push_back(e.data());
     envp.push_back(nullptr);
+    const int max_fd = open_fd_limit();
     const pid_t pid = fork();
     if (pid < 0) throw std::runtime_error("cannot start the renderer: fork failed");
     if (pid == 0) {
       setpgid(0, 0);
+      close_inherited_fds(max_fd);
       execvpe(argv[0], argv.data(), envp.data());
       std::fprintf(stderr, "[carla_canvas] cannot run '%s': %s\n", argv[0], std::strerror(errno));
       _exit(127);
     }
     pid_ = pid;
     log("started the renderer (pid " + std::to_string(pid) + "): " + args[0]);
+  }
+
+  // The descriptors a process may have open: 0 .. the result - 1.
+  static int open_fd_limit() {
+    struct rlimit limit {};
+    if (getrlimit(RLIMIT_NOFILE, &limit) == 0 && limit.rlim_cur != RLIM_INFINITY &&
+        limit.rlim_cur > 3) {
+      return static_cast<int>(std::min<rlim_t>(limit.rlim_cur, 1 << 20));
+    }
+    return 1 << 16;
+  }
+
+  // In the forked child: close every descriptor above stderr. close_range(2)
+  // (Linux 5.9) does it at once; else each, up to max_fd. Only
+  // async-signal-safe calls (syscall, close).
+  static void close_inherited_fds(int max_fd) {
+#ifndef SYS_close_range
+#define SYS_close_range 436  // the same on every architecture with the unified table
+#endif
+    if (syscall(SYS_close_range, 3U, ~0U, 0U) == 0) return;
+    for (int fd = 3; fd < max_fd; ++fd) close(fd);
   }
 
   // Whether it is still running (false once it exited).
