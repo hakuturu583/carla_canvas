@@ -8,7 +8,7 @@ of the CARLA server, and their ROS 2 topics are published by carla_canvas.
 Renderer authors subclass :class:`carla_canvas.Renderer`; see docs/renderers.md.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 from .config import CanvasConfig, load_config  # noqa: E402
 from .geometry import Transform  # noqa: E402
