@@ -95,6 +95,46 @@ The service has no authentication and merges the client's `renderer` section
 trusted network. A renderer started by the plugin stops with the program
 (`carla-canvas serve` watches it through `CARLA_CANVAS_PARENT_PID`).
 
+### A renderer on another machine
+
+The connection is plain gRPC over TCP, without TLS: put the renderer (e.g. a
+GPU host) on the same local network as the program. Images cross uncompressed
+every frame (one 1920×1080 RGB camera at 20 Hz is about 166 MB/s), so that is
+where it is fast enough anyway.
+
+On the renderer host, listen on the address of the link to the client, not on
+every interface (`0.0.0.0`):
+
+```sh
+carla-canvas serve --config canvas.yaml --endpoint 192.168.10.20:50051
+```
+
+On the client, name that address and leave `command` out (it starts a renderer
+on the client's machine; without it, a renderer that does not answer fails the
+`listen()`):
+
+```yaml
+renderer:
+  endpoint: "192.168.10.20:50051"
+sensors:
+  - sensor.camera.rgb
+```
+
+* Asset paths are resolved on the renderer host (relative ones from its
+  configuration file's directory), and the client's `renderer` section is
+  merged over the service's: keep `assets` in the renderer host's file only.
+* Let only the client reach the port, e.g.
+  `sudo ufw allow from 192.168.10.10 to any port 50051 proto tcp`, or put the
+  two machines on a dedicated link or VLAN (which also keeps the bandwidth
+  to themselves).
+* Across an untrusted network, tunnel it instead of opening the port:
+  `ssh -N -L 50051:localhost:50051 gpu-host` with the renderer on
+  `localhost:50051` and the client's `endpoint: "localhost:50051"`.
+* In synchronous mode a frame's callbacks wait for the renderer, so the round
+  trip and the transfer add to every tick; `timeout` bounds each call.
+* ROS 2 topics are published from the renderer host: ROS 2 nodes need DDS to
+  reach it (same network, same `ROS_DOMAIN_ID`).
+
 ## `sensors`
 
 A sensor is rendered by carla_canvas when a rule matches its blueprint id
